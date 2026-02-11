@@ -36,7 +36,7 @@ redundant_closure_for_method_calls = "allow"
 ark-std = { version = "0.5", features = ["std"] }
 ark-ff = { version = "0.5", features = ["asm", "std"] }
 ark-serialize = "0.5"
-ark-crypto-primitives = { version = "0.5", features = ["merkle_tree"] }
+ark-crypto-primitives = { path = "/home/zkfriendly/dev/crypto-primitives/crypto-primitives", features = ["merkle_tree"] }
 ark-poly = "0.5"
 blake3 = "1.5.0"
 sha3 = "0.10"
