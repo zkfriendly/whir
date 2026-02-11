@@ -1,8 +1,6 @@
 use ark_crypto_primitives::merkle_tree::{Config, MerkleTree, MultiPath};
 use ark_ff::FftField;
 use ark_poly::EvaluationDomain;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 use spongefish::{
     codecs::arkworks_algebra::{FieldToUnitSerialize, UnitToField},
     ProofResult, UnitToBytes,
@@ -23,7 +21,7 @@ use crate::{
     sumcheck::SumcheckSingle,
     utils::expand_randomness,
     whir::{
-        merkle,
+        merkle::{self, build_merkle_tree, BatchLeafDigest},
         parameters::RoundConfig,
         utils::{
             get_challenge_stir_queries, rlc_batched_leaves, sample_ood_points,
@@ -46,7 +44,7 @@ where
 impl<F, MerkleConfig, PowStrategy> Prover<F, MerkleConfig, PowStrategy>
 where
     F: FftField,
-    MerkleConfig: Config<Leaf = [F]>,
+    MerkleConfig: Config<Leaf = [F]> + BatchLeafDigest,
     PowStrategy: spongefish_pow::PowStrategy,
 {
     pub const fn new(config: WhirConfig<F, MerkleConfig, PowStrategy>) -> Self {
@@ -379,15 +377,14 @@ where
             folding_factor_next,
         );
 
-        #[cfg(not(feature = "parallel"))]
-        let leafs_iter = batched_evals.chunks_exact(1 << folding_factor_next);
-        #[cfg(feature = "parallel")]
-        let leafs_iter = batched_evals.par_chunks_exact(1 << folding_factor_next);
+        let leaves_vec: Vec<&[F]> = batched_evals
+            .chunks_exact(1 << folding_factor_next)
+            .collect();
 
-        let batched_merkle_tree = MerkleTree::new(
+        let batched_merkle_tree = build_merkle_tree::<MerkleConfig, _>(
             &self.config.leaf_hash_params,
             &self.config.two_to_one_params,
-            leafs_iter,
+            leaves_vec,
         )
         .unwrap();
         prover_state.add_digest(batched_merkle_tree.root())?;
@@ -608,17 +605,14 @@ where
             folding_factor_next,
         );
 
-        #[cfg(not(feature = "parallel"))]
-        let leafs_iter = evals.chunks_exact(1 << folding_factor_next);
-        #[cfg(feature = "parallel")]
-        let leafs_iter = evals.par_chunks_exact(1 << folding_factor_next);
+        let leaves_vec: Vec<&[F]> = evals.chunks_exact(1 << folding_factor_next).collect();
         let merkle_tree = {
             #[cfg(feature = "tracing")]
-            let _span = span!(Level::INFO, "MerkleTree::new", size = leafs_iter.len()).entered();
-            MerkleTree::new(
+            let _span = span!(Level::INFO, "MerkleTree::new", size = leaves_vec.len()).entered();
+            build_merkle_tree::<MerkleConfig, _>(
                 &self.config.leaf_hash_params,
                 &self.config.two_to_one_params,
-                leafs_iter,
+                leaves_vec,
             )
             .unwrap()
         };

@@ -1,8 +1,6 @@
-use ark_crypto_primitives::merkle_tree::{Config, MerkleTree};
+use ark_crypto_primitives::merkle_tree::Config;
 use ark_ff::FftField;
 use ark_poly::EvaluationDomain;
-#[cfg(feature = "parallel")]
-use rayon::prelude::*;
 use spongefish::{
     codecs::arkworks_algebra::{BytesToUnitSerialize, FieldToUnitSerialize, UnitToField},
     ProofResult,
@@ -14,6 +12,7 @@ use super::Witness;
 use crate::{
     poly_utils::coeffs::CoefficientList,
     whir::{
+        merkle::{build_merkle_tree, BatchLeafDigest},
         parameters::WhirConfig,
         utils::{compute_ood_response, sample_ood_points, DigestToUnitSerialize},
     },
@@ -36,7 +35,7 @@ where
 impl<F, MerkleConfig, PowStrategy> CommitmentWriter<F, MerkleConfig, PowStrategy>
 where
     F: FftField,
-    MerkleConfig: Config<Leaf = [F]>,
+    MerkleConfig: Config<Leaf = [F]> + BatchLeafDigest,
 {
     pub const fn new(config: WhirConfig<F, MerkleConfig, PowStrategy>) -> Self {
         Self { config }
@@ -89,18 +88,15 @@ where
             }
         }
 
-        #[cfg(not(feature = "parallel"))]
-        let leafs_iter = stacked_leaves.chunks_exact(stacked_leaf_size);
-        #[cfg(feature = "parallel")]
-        let leafs_iter = stacked_leaves.par_chunks_exact(stacked_leaf_size);
+        let leaves_vec: Vec<&[F]> = stacked_leaves.chunks_exact(stacked_leaf_size).collect();
 
         let merkle_tree = {
             #[cfg(feature = "tracing")]
-            let _span = span!(Level::INFO, "MerkleTree::new", size = leafs_iter.len()).entered();
-            MerkleTree::<MerkleConfig>::new(
+            let _span = span!(Level::INFO, "MerkleTree::new", size = leaves_vec.len()).entered();
+            build_merkle_tree::<MerkleConfig, _>(
                 &self.config.leaf_hash_params,
                 &self.config.two_to_one_params,
-                leafs_iter,
+                leaves_vec,
             )
             .unwrap()
         };

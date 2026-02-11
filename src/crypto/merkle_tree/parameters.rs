@@ -60,6 +60,26 @@ where
     type TwoToOneHash = CompressH;
 }
 
+/// Use the default per-element leaf hashing for all generic MerkleTreeParams.
+impl<F, LeafH, CompressH, Digest> crate::whir::merkle::BatchLeafDigest
+    for MerkleTreeParams<F, LeafH, CompressH, Digest>
+where
+    F: CanonicalSerialize + Send,
+    LeafH: CRHScheme<Input = [F], Output = Digest>,
+    CompressH: TwoToOneCRHScheme<Input = Digest, Output = Digest>,
+    Digest: Clone
+        + std::fmt::Debug
+        + Default
+        + CanonicalSerialize
+        + CanonicalDeserialize
+        + Eq
+        + PartialEq
+        + Hash
+        + Send
+        + Absorb,
+{
+}
+
 impl<F: Field, LeafH, CompressH, const N: usize>
     DigestDomainSeparator<MerkleTreeParams<F, LeafH, CompressH, GenericDigest<N>>>
     for DomainSeparator

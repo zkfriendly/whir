@@ -4,6 +4,7 @@ use ark_crypto_primitives::{
     crh::{CRHScheme, TwoToOneCRHScheme},
     merkle_tree::Config,
 };
+use whir::whir::merkle::BatchLeafDigest;
 use ark_ff::{FftField, Field};
 use ark_serialize::CanonicalSerialize;
 use clap::Parser;
@@ -164,7 +165,7 @@ fn run_whir<F, MerkleConfig>(
     two_to_one_params: <<MerkleConfig as Config>::TwoToOneHash as TwoToOneCRHScheme>::Parameters,
 ) where
     F: FftField + CanonicalSerialize,
-    MerkleConfig: Config<Leaf = [F]> + Clone,
+    MerkleConfig: Config<Leaf = [F]> + Clone + BatchLeafDigest,
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
     DomainSeparator: DigestDomainSeparator<MerkleConfig>,
     ProverState: DigestToUnitSerialize<MerkleConfig>,
@@ -200,7 +201,7 @@ fn run_whir_as_ldt<F, MerkleConfig>(
     two_to_one_params: <<MerkleConfig as Config>::TwoToOneHash as TwoToOneCRHScheme>::Parameters,
 ) where
     F: FftField + CanonicalSerialize,
-    MerkleConfig: Config<Leaf = [F]> + Clone,
+    MerkleConfig: Config<Leaf = [F]> + Clone + BatchLeafDigest,
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
     DomainSeparator: DigestDomainSeparator<MerkleConfig>,
     ProverState: DigestToUnitSerialize<MerkleConfig>,
@@ -321,7 +322,7 @@ fn run_whir_pcs<F, MerkleConfig>(
     two_to_one_params: <<MerkleConfig as Config>::TwoToOneHash as TwoToOneCRHScheme>::Parameters,
 ) where
     F: FftField + CanonicalSerialize,
-    MerkleConfig: Config<Leaf = [F]> + Clone,
+    MerkleConfig: Config<Leaf = [F]> + Clone + BatchLeafDigest,
     MerkleConfig::InnerDigest: AsRef<[u8]> + From<[u8; 32]>,
     DomainSeparator: DigestDomainSeparator<MerkleConfig>,
     ProverState: DigestToUnitSerialize<MerkleConfig>,

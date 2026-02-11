@@ -1,4 +1,9 @@
-use ark_crypto_primitives::merkle_tree::{Config, LeafParam, MerkleTree, MultiPath, TwoToOneParam};
+use ark_crypto_primitives::{
+    crh::CRHScheme,
+    merkle_tree::{Config, LeafParam, MerkleTree, MultiPath, TwoToOneParam},
+};
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 use spongefish::{ProofError, ProofResult};
 
 use crate::{
@@ -6,6 +11,42 @@ use crate::{
     parameters::MerkleProofStrategy,
     whir::utils::{HintDeserialize, HintSerialize},
 };
+
+/// Extension trait for `Config` that allows batch computation of leaf digests.
+///
+/// Override `batch_build_leaf_digests` to provide optimized batch hashing
+/// (e.g., SIMD-accelerated Skyscraper hashing). The default implementation
+/// hashes each leaf individually using `LeafHash::evaluate`.
+pub trait BatchLeafDigest: Config {
+    fn batch_build_leaf_digests<L: AsRef<Self::Leaf> + Send + Sync>(
+        leaf_hash_param: &LeafParam<Self>,
+        leaves: &[L],
+    ) -> Result<Vec<Self::LeafDigest>, ark_crypto_primitives::Error>
+    where
+        Self: Sized,
+    {
+        #[cfg(feature = "parallel")]
+        let iter = leaves.par_iter();
+        #[cfg(not(feature = "parallel"))]
+        let iter = leaves.iter();
+
+        iter.map(|input| Self::LeafHash::evaluate(leaf_hash_param, input.as_ref()))
+            .collect()
+    }
+}
+
+/// Build a Merkle tree using batch leaf digest computation.
+///
+/// Calls `MC::batch_build_leaf_digests` to compute leaf digests, then
+/// delegates to `MerkleTree::new_with_leaf_digest` for inner node construction.
+pub fn build_merkle_tree<MC: BatchLeafDigest, L: AsRef<MC::Leaf> + Send + Sync>(
+    leaf_hash_param: &LeafParam<MC>,
+    two_to_one_param: &TwoToOneParam<MC>,
+    leaves: Vec<L>,
+) -> Result<MerkleTree<MC>, ark_crypto_primitives::Error> {
+    let leaf_digests = MC::batch_build_leaf_digests(leaf_hash_param, &leaves)?;
+    MerkleTree::new_with_leaf_digest(leaf_hash_param, two_to_one_param, leaf_digests)
+}
 
 /// Prover-side state for emitting Merkle proofs using a fixed strategy.
 pub struct ProverMerkleState {
