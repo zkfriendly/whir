@@ -7,11 +7,12 @@ use rayon::prelude::*;
 use tracing::instrument;
 
 use super::{Config, Witness};
+#[cfg(not(feature = "parallel"))]
+use crate::algebra::{embedding::Identity, mixed_dot};
 use crate::{
     algebra::{
-        embedding::Identity,
         linear_form::{Covector, Evaluate, LinearForm},
-        mixed_dot, scalar_mul_add, MultilinearPoint,
+        scalar_mul_add, MultilinearPoint,
     },
     hash::Hash,
     protocols::whir_zk::utils::{
@@ -97,7 +98,6 @@ fn evaluate_gamma_block<F: FftField + PrimeField>(
                 |(mut accum, mut eq_buf), (chunk_idx, chunk)| {
                     let base_gi = chunk_idx * batch;
                     let chunk_gammas = chunk.len() / stride_per_gamma;
-                    let embedding = Identity::<F>::new();
                     for local in 0..chunk_gammas {
                         let gi = base_gi + local;
                         let gamma = h_gammas[gi];
@@ -114,8 +114,14 @@ fn evaluate_gamma_block<F: FftField + PrimeField>(
                                 .map(|(&e, &f)| e * f)
                                 .sum();
                             for (j, g_hat) in bp.g_hats.iter().enumerate() {
-                                slot[off + 1 + j] =
-                                    one_plus_rho * mixed_dot(&embedding, &eq_buf, g_hat);
+                                // Serial dot product: avoid nested parallelism since
+                                // we are already inside a par_chunks_mut closure.
+                                slot[off + 1 + j] = one_plus_rho
+                                    * eq_buf
+                                        .iter()
+                                        .zip(g_hat.iter())
+                                        .map(|(&a, &b)| a * b)
+                                        .sum::<F>();
                             }
                             let mut h = slot[off];
                             let mut bp_pow = blinding_challenge;
