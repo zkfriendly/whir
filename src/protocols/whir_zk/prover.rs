@@ -9,9 +9,8 @@ use tracing::instrument;
 use super::{Config, Witness};
 use crate::{
     algebra::{
-        embedding::Identity,
         linear_form::{Covector, Evaluate, LinearForm},
-        mixed_dot, scalar_mul_add,
+        scalar_mul_add,
     },
     hash::Hash,
     protocols::{
@@ -68,6 +67,26 @@ fn evaluate_gamma_block<F: FftField>(
         })
         .collect();
 
+    // Build interleaved matrix per polynomial for cache-friendly dot products.
+    // Layout: for each k in 0..half_size, store [folded_m[k], g0[k], g1[k], ..., g_{mu-1}[k]].
+    // This lets us read eq_buf once per gamma and compute all dot products in a single pass,
+    // avoiding 20+ separate traversals and the nested rayon spawns that mixed_dot would trigger.
+    let num_vecs_per_poly = num_witness_variables + 1; // m_eval + g_hat_evals
+    let interleaved_polys: Vec<Vec<F>> = blinding_polynomials
+        .iter()
+        .enumerate()
+        .map(|(poly_idx, bp)| {
+            let mut mat = vec![F::ZERO; half_size * num_vecs_per_poly];
+            for k in 0..half_size {
+                mat[k * num_vecs_per_poly] = folded_m_polys[poly_idx][k];
+                for (j, g_hat) in bp.g_hats.iter().enumerate() {
+                    mat[k * num_vecs_per_poly + 1 + j] = g_hat[k];
+                }
+            }
+            mat
+        })
+        .collect();
+
     // Pre-compute tau2 powers for the parallel gamma loop.
     let num_gammas = h_gammas.len();
     let tau2_powers = {
@@ -100,7 +119,6 @@ fn evaluate_gamma_block<F: FftField>(
                 |(mut accum, mut eq_buf), (chunk_idx, chunk)| {
                     let base_gi = chunk_idx * batch;
                     let chunk_gammas = chunk.len() / stride_per_gamma;
-                    let embedding = Identity::<F>::new();
                     for local in 0..chunk_gammas {
                         let gi = base_gi + local;
                         let gamma = h_gammas[gi];
@@ -111,14 +129,21 @@ fn evaluate_gamma_block<F: FftField>(
                         scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
                         for (poly_idx, bp) in blinding_polynomials.iter().enumerate() {
                             let off = poly_idx * stride_per_poly;
-                            slot[off] = eq_buf
-                                .iter()
-                                .zip(folded_m_polys[poly_idx].iter())
-                                .map(|(&e, &f)| e * f)
-                                .sum();
-                            for (j, g_hat) in bp.g_hats.iter().enumerate() {
-                                slot[off + 1 + j] =
-                                    one_plus_rho * mixed_dot(&embedding, &eq_buf, g_hat);
+                            // Fused dot products: single pass over eq_buf computes m_eval
+                            // and all g_hat_evals simultaneously. Avoids nested rayon spawns
+                            // and reads eq_buf only once instead of (1 + num_g_hats) times.
+                            let mat = &interleaved_polys[poly_idx];
+                            let mut dots = vec![F::ZERO; num_vecs_per_poly];
+                            for k in 0..half_size {
+                                let e = eq_buf[k];
+                                let row = &mat[k * num_vecs_per_poly..(k + 1) * num_vecs_per_poly];
+                                for (d, &v) in dots.iter_mut().zip(row.iter()) {
+                                    *d += e * v;
+                                }
+                            }
+                            slot[off] = dots[0];
+                            for j in 0..bp.g_hats.len() {
+                                slot[off + 1 + j] = one_plus_rho * dots[1 + j];
                             }
                             let mut h = slot[off];
                             let mut bp_pow = blinding_challenge;
@@ -148,7 +173,6 @@ fn evaluate_gamma_block<F: FftField>(
 
     #[cfg(not(feature = "parallel"))]
     let beq_half_accum = {
-        let embedding = Identity::<F>::new();
         let mut eq_buf = vec![F::ZERO; half_size];
         let mut accum = vec![F::ZERO; half_size];
         for (gi, &gamma) in h_gammas.iter().enumerate() {
@@ -157,14 +181,18 @@ fn evaluate_gamma_block<F: FftField>(
             scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
             for (poly_idx, bp) in blinding_polynomials.iter().enumerate() {
                 let off = gi * stride_per_gamma + poly_idx * stride_per_poly;
-                eval_results[off] = eq_buf
-                    .iter()
-                    .zip(folded_m_polys[poly_idx].iter())
-                    .map(|(&e, &f)| e * f)
-                    .sum();
-                for (j, g_hat) in bp.g_hats.iter().enumerate() {
-                    eval_results[off + 1 + j] =
-                        one_plus_rho * mixed_dot(&embedding, &eq_buf, g_hat);
+                let mat = &interleaved_polys[poly_idx];
+                let mut dots = vec![F::ZERO; num_vecs_per_poly];
+                for k in 0..half_size {
+                    let e = eq_buf[k];
+                    let row = &mat[k * num_vecs_per_poly..(k + 1) * num_vecs_per_poly];
+                    for (d, &v) in dots.iter_mut().zip(row.iter()) {
+                        *d += e * v;
+                    }
+                }
+                eval_results[off] = dots[0];
+                for j in 0..bp.g_hats.len() {
+                    eval_results[off + 1 + j] = one_plus_rho * dots[1 + j];
                 }
                 let mut h = eval_results[off];
                 let mut bp_pow = blinding_challenge;
