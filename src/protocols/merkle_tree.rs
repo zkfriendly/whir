@@ -126,6 +126,27 @@ impl Config {
         Witness { nodes }
     }
 
+    pub fn commit_witness<H, R>(
+        &self,
+        prover_state: &mut ProverState<H, R>,
+        witness: Witness,
+    ) -> Witness
+    where
+        H: DuplexSpongeInterface,
+        R: RngCore + CryptoRng,
+        Hash: ProverMessage<[H::U]>,
+    {
+        assert_eq!(
+            witness.nodes.len(),
+            self.num_nodes(),
+            "Expected {} merkle nodes, got {}",
+            self.num_nodes(),
+            witness.nodes.len()
+        );
+        prover_state.prover_message(&witness.root());
+        witness
+    }
+
     pub fn receive_commitment<H>(
         &self,
         verifier_state: &mut VerifierState<H>,
@@ -273,8 +294,20 @@ impl Config {
 }
 
 impl Witness {
+    pub fn from_nodes(nodes: Vec<Hash>) -> Self {
+        Self { nodes }
+    }
+
     pub const fn num_nodes(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn nodes(&self) -> &[Hash] {
+        &self.nodes
+    }
+
+    pub fn root(&self) -> Hash {
+        self.nodes.last().copied().unwrap_or_default()
     }
 }
 

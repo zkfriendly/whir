@@ -43,7 +43,7 @@ use crate::{
     },
     engines::EngineId,
     hash::Hash,
-    protocols::{challenge_indices::challenge_indices, matrix_commit},
+    protocols::{challenge_indices::challenge_indices, matrix_commit, merkle_tree},
     transcript::{
         Codec, Decoding, DuplexSpongeInterface, ProverMessage, ProverState, VerificationResult,
         VerifierMessage, VerifierState,
@@ -114,6 +114,7 @@ pub trait AcceleratedCommitter<F>: fmt::Debug + Send + Sync {
         codeword_length: usize,
         interleaving_depth: usize,
         leaf_hash_id: EngineId,
+        merkle_tree: &merkle_tree::Config,
     ) -> Result<Option<AcceleratedCommit<F>>, String>;
 }
 
@@ -124,8 +125,9 @@ pub trait MatrixRows<F>: fmt::Debug + Send + Sync {
 
 #[derive(Clone, Debug)]
 pub struct AcceleratedCommit<F> {
-    pub matrix: Arc<dyn MatrixRows<F>>,
-    pub leaf_hashes: Vec<Hash>,
+    pub matrix:         Arc<dyn MatrixRows<F>>,
+    pub leaf_hashes:    Option<Vec<Hash>>,
+    pub matrix_witness: Option<matrix_commit::Witness>,
 }
 
 #[derive(Clone, Debug)]
@@ -389,13 +391,21 @@ where
                 self.codeword_length,
                 self.interleaving_depth,
                 self.matrix_commit.leaf_hash_id,
+                &self.matrix_commit.merkle_tree,
             ) {
                 Ok(Some(commit)) => {
-                    assert_eq!(commit.leaf_hashes.len(), self.matrix_commit.num_rows());
-                    let matrix_witness = self
-                        .matrix_commit
-                        .merkle_tree
-                        .commit(prover_state, commit.leaf_hashes);
+                    let matrix_witness = if let Some(matrix_witness) = commit.matrix_witness {
+                        self.matrix_commit
+                            .merkle_tree
+                            .commit_witness(prover_state, matrix_witness)
+                    } else if let Some(leaf_hashes) = commit.leaf_hashes {
+                        assert_eq!(leaf_hashes.len(), self.matrix_commit.num_rows());
+                        self.matrix_commit
+                            .merkle_tree
+                            .commit(prover_state, leaf_hashes)
+                    } else {
+                        panic!("accelerated IRS commit returned neither a matrix witness nor leaf hashes")
+                    };
                     (MatrixStorage::Accelerated(commit.matrix), matrix_witness)
                 }
                 Ok(None) => {
