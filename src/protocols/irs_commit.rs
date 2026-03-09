@@ -21,6 +21,7 @@ use std::{
     f64::{self, consts::LOG2_10},
     fmt,
     ops::Neg,
+    sync::{Arc, LazyLock},
 };
 
 use ark_ff::{AdditiveGroup, FftField, Field};
@@ -48,6 +49,7 @@ use crate::{
         VerifierMessage, VerifierState,
     },
     type_info::Typed,
+    type_map::{self, TypeMap},
     utils::zip_strict,
     verify,
 };
@@ -96,10 +98,79 @@ where
     pub deduplicate_in_domain: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
+pub static ACCELERATORS: LazyLock<TypeMap<AcceleratorFamily>> = LazyLock::new(TypeMap::new);
+
+#[derive(Default)]
+pub struct AcceleratorFamily;
+
+impl type_map::Family for AcceleratorFamily {
+    type Dyn<F: 'static> = dyn AcceleratedCommitter<F>;
+}
+
+pub trait AcceleratedCommitter<F>: fmt::Debug + Send + Sync {
+    fn try_commit_interleaved(
+        &self,
+        interleaved_coeffs: &[&[F]],
+        codeword_length: usize,
+        interleaving_depth: usize,
+        leaf_hash_id: EngineId,
+    ) -> Result<Option<AcceleratedCommit<F>>, String>;
+}
+
+pub trait MatrixRows<F>: fmt::Debug + Send + Sync {
+    fn len(&self) -> usize;
+    fn read_rows(&self, indices: &[usize]) -> Vec<F>;
+}
+
+#[derive(Clone, Debug)]
+pub struct AcceleratedCommit<F> {
+    pub matrix: Arc<dyn MatrixRows<F>>,
+    pub leaf_hashes: Vec<Hash>,
+}
+
+#[derive(Clone, Debug)]
+pub enum MatrixStorage<F> {
+    Cpu(Vec<F>),
+    Accelerated(Arc<dyn MatrixRows<F>>),
+}
+
+impl<F> Default for MatrixStorage<F> {
+    fn default() -> Self {
+        Self::Cpu(Vec::new())
+    }
+}
+
+impl<F: Copy> MatrixStorage<F> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Cpu(matrix) => matrix.len(),
+            Self::Accelerated(matrix) => matrix.len(),
+        }
+    }
+
+    fn read_rows(&self, row_width: usize, indices: &[usize]) -> Vec<F> {
+        match self {
+            Self::Cpu(matrix) => {
+                let mut out = Vec::with_capacity(indices.len() * row_width);
+                for &index in indices {
+                    let row = &matrix[index * row_width..(index + 1) * row_width];
+                    out.extend_from_slice(row);
+                }
+                out
+            }
+            Self::Accelerated(matrix) => matrix.read_rows(indices),
+        }
+    }
+
+    fn is_accelerated(&self) -> bool {
+        matches!(self, Self::Accelerated(_))
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 #[must_use]
 pub struct Witness<F: FftField, G: Field> {
-    pub matrix: Vec<F>,
+    matrix: MatrixStorage<F>,
     pub matrix_witness: matrix_commit::Witness,
     pub out_of_domain: Evaluations<G>,
 }
@@ -298,6 +369,7 @@ where
         R: RngCore + CryptoRng,
         M::Target: Codec<[H::U]>,
         Hash: ProverMessage<[H::U]>,
+        M::Source: 'static,
     {
         // Validate config
         assert!((self.vector_size).is_multiple_of(self.interleaving_depth));
@@ -311,11 +383,41 @@ where
         assert_eq!(vectors.len(), self.num_vectors);
         assert!(vectors.iter().all(|p| p.len() == self.vector_size));
 
-        // Interleaved RS Encode the vectorss
-        let matrix = interleaved_rs_encode(vectors, self.codeword_length, self.interleaving_depth);
-
-        // Commit to the matrix
-        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+        let (matrix, matrix_witness) = if let Some(accelerator) = ACCELERATORS.get::<M::Source>() {
+            match accelerator.try_commit_interleaved(
+                vectors,
+                self.codeword_length,
+                self.interleaving_depth,
+                self.matrix_commit.leaf_hash_id,
+            ) {
+                Ok(Some(commit)) => {
+                    assert_eq!(commit.leaf_hashes.len(), self.matrix_commit.num_rows());
+                    let matrix_witness = self
+                        .matrix_commit
+                        .merkle_tree
+                        .commit(prover_state, commit.leaf_hashes);
+                    (MatrixStorage::Accelerated(commit.matrix), matrix_witness)
+                }
+                Ok(None) => {
+                    let matrix =
+                        interleaved_rs_encode(vectors, self.codeword_length, self.interleaving_depth);
+                    let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+                    (MatrixStorage::Cpu(matrix), matrix_witness)
+                }
+                Err(err) => {
+                    panic!(
+                        "accelerated IRS commit failed for codeword_length={} \
+                         interleaving_depth={}: {}",
+                        self.codeword_length, self.interleaving_depth, err
+                    )
+                }
+            }
+        } else {
+            let matrix =
+                interleaved_rs_encode(vectors, self.codeword_length, self.interleaving_depth);
+            let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+            (MatrixStorage::Cpu(matrix), matrix_witness)
+        };
 
         // Handle out-of-domain points and values
         let oods_points: Vec<M::Target> =
@@ -399,18 +501,12 @@ where
         // and collect them in the evaluation matrix.
         let stride = witnesses.len() * self.num_cols();
         let mut matrix = vec![M::Source::ZERO; indices.len() * stride];
-        let mut submatrix = Vec::with_capacity(indices.len() * self.num_cols());
         let mut matrix_col_offset = 0;
         for witness in witnesses {
-            submatrix.clear();
-            for (point_index, &code_index) in indices.iter().enumerate() {
-                let row = &witness.matrix
-                    [code_index * self.num_cols()..(code_index + 1) * self.num_cols()];
-                submatrix.extend_from_slice(row);
-
+            let submatrix = witness.matrix.read_rows(self.num_cols(), &indices);
+            for (point_index, row) in submatrix.chunks_exact(self.num_cols()).enumerate() {
                 let matrix_row = &mut matrix[point_index * stride..(point_index + 1) * stride];
-                matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
-                    .copy_from_slice(row);
+                matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()].copy_from_slice(row);
             }
             prover_state.prover_hint_ark(&submatrix);
             self.matrix_commit
@@ -512,6 +608,14 @@ impl<F: FftField, G: Field> Witness<F, G> {
     /// Returns the out-of-domain evaluations.
     pub const fn out_of_domain(&self) -> &Evaluations<G> {
         &self.out_of_domain
+    }
+
+    pub fn matrix_len(&self) -> usize {
+        self.matrix.len()
+    }
+
+    pub fn uses_accelerated_matrix(&self) -> bool {
+        self.matrix.is_accelerated()
     }
 
     pub fn num_vectors(&self) -> usize {
