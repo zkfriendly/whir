@@ -3,6 +3,18 @@
 version = 4
 
 [[package]]
+name = "ahash"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f179cd60c4584b8a8c596927aadc462e27f2ca70c04e0071964a73ba7a75"
+dependencies = [
+ "cfg-if",
+ "once_cell",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10,6 +22,12 @@ checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "anstream"
@@ -77,6 +95,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-bn254"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d69eab57e8d2663efa5c63135b2af4f396d66424f88954c21104125ab6b3e6bc"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+]
+
+[[package]]
+name = "ark-ec"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43d68f2d516162846c1238e755a7c4d131b892b70cc70c471a8e3ca3ed818fce"
+dependencies = [
+ "ahash",
+ "ark-ff",
+ "ark-poly",
+ "ark-serialize",
+ "ark-std",
+ "educe",
+ "fnv",
+ "hashbrown 0.15.5",
+ "itertools 0.13.0",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "zeroize",
+]
+
+[[package]]
 name = "ark-ff"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -120,15 +170,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-poly"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "579305839da207f02b89cd1679e50e67b4331e2f9294a57693e5051b7703fe27"
+dependencies = [
+ "ahash",
+ "ark-ff",
+ "ark-serialize",
+ "ark-std",
+ "educe",
+ "fnv",
+ "hashbrown 0.15.5",
+]
+
+[[package]]
 name = "ark-serialize"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f4d068aaf107ebcd7dfb52bc748f8030e0fc930ac8e360146ca54c1203088f7"
 dependencies = [
+ "ark-serialize-derive",
  "ark-std",
  "arrayvec",
  "digest",
  "num-bigint",
+]
+
+[[package]]
+name = "ark-serialize-derive"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "213888f660fddcca0d257e88e54ac05bca01885f258ccdf695bafd77031bb69d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -439,6 +516,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudarc"
+version = "0.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6468cb7fa330840f3ebcd8df51edc0e7bf5c18df524792ce6004c6821851cdf3"
+dependencies = [
+ "libloading",
+]
+
+[[package]]
 name = "derive-where"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -596,6 +682,15 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.15.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+dependencies = [
+ "allocator-api2",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
@@ -625,7 +720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7714e70437a7dc3ac8eb7e6f8df75fd8eb422675fc7678aff7364301092b1017"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -678,6 +773,16 @@ name = "libc"
 version = "0.2.180"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bcc35a38544a891a5f7c865aca548a982ccb3b8650a5b06d0fd33a10283c56fc"
+
+[[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "linux-raw-sys"
@@ -1535,6 +1640,7 @@ name = "whir"
 version = "0.1.0"
 dependencies = [
  "approx",
+ "ark-bn254",
  "ark-ff",
  "ark-serialize",
  "ark-std",
@@ -1544,6 +1650,7 @@ dependencies = [
  "clap",
  "codspeed-divan-compat",
  "const-oid",
+ "cudarc",
  "derive-where",
  "digest",
  "hex",

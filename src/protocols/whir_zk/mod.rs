@@ -1,4 +1,6 @@
 mod committer;
+#[cfg(target_os = "linux")]
+mod cuda_bn254;
 mod prover;
 mod utils;
 mod verifier;

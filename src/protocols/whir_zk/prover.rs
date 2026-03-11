@@ -49,6 +49,42 @@ fn evaluate_gamma_block<F: FftField>(
     tau2: F,
     num_blinding_variables: usize,
     num_witness_variables: usize,
+) -> (Vec<F>, Vec<F>)
+where
+    F: 'static,
+{
+    #[cfg(target_os = "linux")]
+    if let Some(result) = super::cuda_bn254::try_evaluate_gamma_block(
+        blinding_polynomials,
+        h_gammas,
+        masking_challenge,
+        blinding_challenge,
+        tau2,
+        num_blinding_variables,
+        num_witness_variables,
+    ) {
+        return result;
+    }
+
+    evaluate_gamma_block_cpu(
+        blinding_polynomials,
+        h_gammas,
+        masking_challenge,
+        blinding_challenge,
+        tau2,
+        num_blinding_variables,
+        num_witness_variables,
+    )
+}
+
+fn evaluate_gamma_block_cpu<F: FftField>(
+    blinding_polynomials: &[BlindingPolynomials<F>],
+    h_gammas: &[F],
+    masking_challenge: F,
+    blinding_challenge: F,
+    tau2: F,
+    num_blinding_variables: usize,
+    num_witness_variables: usize,
 ) -> (Vec<F>, Vec<F>) {
     let num_polynomials = blinding_polynomials.len();
     let half_size = 1usize << num_blinding_variables;
@@ -216,7 +252,7 @@ impl<F: FftField> Config<F> {
     where
         H: DuplexSpongeInterface<U = u8>,
         R: ark_std::rand::RngCore + ark_std::rand::CryptoRng,
-        F: Codec<[H::U]>,
+        F: Codec<[H::U]> + 'static,
         [u8; 32]: Decoding<[H::U]>,
         U64: Codec<[H::U]>,
         u8: Decoding<[H::U]>,

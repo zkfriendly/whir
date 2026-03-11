@@ -33,6 +33,7 @@ similar_names = "allow"
 redundant_closure_for_method_calls = "allow"
 
 [dependencies]
+ark-bn254 = { version = "0.5.0", default-features = false, features = ["scalar_field"] }
 ark-std = { version = "0.5", features = ["std"] }
 ark-ff = { version = "0.5", features = ["asm", "std"] }
 ark-serialize = "0.5"
@@ -57,6 +58,15 @@ arrayvec = "0.7.6"
 derive-where = { version = "1.6.0", features = ["safe"] }
 approx = "0.5.1"
 ordered-float = { version = "5.1.0", features = ["serde"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cudarc = { version = "0.19.3", default-features = false, features = [
+  "cuda-12000",
+  "driver",
+  "nvrtc",
+  "std",
+  "fallback-dynamic-loading",
+] }
 
 [dev-dependencies]
 proptest = "1.0"
