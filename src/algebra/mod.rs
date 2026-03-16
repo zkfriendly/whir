@@ -51,6 +51,12 @@ pub fn lift<M: Embedding>(embedding: &M, source: &[M::Source]) -> Vec<M::Target>
     result
 }
 
+pub fn scalar_mul<F: Field>(vector: &mut [F], weight: F) {
+    for value in vector.iter_mut() {
+        *value *= weight;
+    }
+}
+
 pub fn scalar_mul_add<F: Field>(accumulator: &mut [F], weight: F, vector: &[F]) {
     mixed_scalar_mul_add(
         &embedding::Identity::<F>::new(),

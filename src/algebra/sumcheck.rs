@@ -2,23 +2,25 @@ use ark_ff::Field;
 #[cfg(feature = "parallel")]
 use rayon::join;
 
-use crate::algebra::embedding::Embedding;
+use crate::algebra::{dot, embedding::Embedding, scalar_mul};
 #[cfg(feature = "parallel")]
 use crate::utils::workload_size;
 
 /// Computes the constant and quadratic coefficient of the sumcheck polynomial.
+///
+/// Vectors `a` and `b` are implicitly zero-extended to the next power of two.
 pub fn compute_sumcheck_polynomial<F: Field>(a: &[F], b: &[F]) -> (F, F) {
     fn recurse<F: Field>(a0: &[F], a1: &[F], b0: &[F], b1: &[F]) -> (F, F) {
-        debug_assert_eq!(a0.len(), a1.len());
-        debug_assert_eq!(b0.len(), b1.len());
         debug_assert_eq!(a0.len(), b0.len());
+        debug_assert_eq!(a1.len(), b1.len());
+        debug_assert!(a0.len() == a1.len());
 
         #[cfg(feature = "parallel")]
         if a0.len() * 4 > workload_size::<F>() {
             let mid = a0.len() / 2;
             let (a0l, a0r) = a0.split_at(mid);
-            let (a1l, a1r) = a1.split_at(mid);
             let (b0l, b0r) = b0.split_at(mid);
+            let (a1l, a1r) = a1.split_at(mid);
             let (b1l, b1r) = b1.split_at(mid);
             let (left, right) = join(
                 || recurse(a0l, a1l, b0l, b1l),
@@ -26,33 +28,53 @@ pub fn compute_sumcheck_polynomial<F: Field>(a: &[F], b: &[F]) -> (F, F) {
             );
             return (left.0 + right.0, left.1 + right.1);
         }
-
         let mut acc0 = F::ZERO;
         let mut acc2 = F::ZERO;
-        for ((&p0, &p1), (&eq0, &eq1)) in a0.iter().zip(a1).zip(b0.iter().zip(b1)) {
-            acc0 += p0 * eq0;
-            acc2 += (p1 - p0) * (eq1 - eq0);
+        for ((&a0, &a1), (&b0, &b1)) in a0.iter().zip(a1).zip(b0.iter().zip(b1)) {
+            acc0 += a0 * b0;
+            acc2 += (a1 - a0) * (b1 - b0);
         }
         (acc0, acc2)
     }
 
     assert_eq!(a.len(), b.len());
-    let half = a.len() / 2;
+    if a.len() == 0 {
+        return (F::ZERO, F::ZERO);
+    }
+    if a.len() == 1 {
+        return (a[0] * b[0], F::ZERO);
+    }
 
+    let half = a.len().next_power_of_two() >> 1;
     let (a0, a1) = a.split_at(half);
     let (b0, b1) = b.split_at(half);
-    recurse(a0, a1, b0, b1)
+    debug_assert!(a0.len() >= a1.len());
+    let (a0, a0_tail) = a0.split_at(a1.len());
+    let (b0, b0_tail) = b0.split_at(a1.len());
+    let (acc0, acc2) = recurse(a0, a1, b0, b1);
+
+    // Handle the tail part where a1, b1 is implicit zero padding,
+    // When a1, b1 = 0, then acc0 = acc2 = a0 * b0:
+    let acc = dot(a0_tail, b0_tail);
+
+    (acc0 + acc, acc2 + acc)
 }
 
 /// Folds evaluations by linear interpolation at the given weight, in place.
+///
+/// The `values` are implictly zero-padded to the next power of two. On return,
+/// the length of `values` will always be a power of two.
 pub fn fold<F: Field>(values: &mut Vec<F>, weight: F) {
-    fn recurse<F: Field>(low: &mut [F], high: &[F], weight: F) {
+    fn recurse_both<F: Field>(low: &mut [F], high: &[F], weight: F) {
         #[cfg(feature = "parallel")]
         if low.len() > workload_size::<F>() {
             let split = low.len() / 2;
             let (ll, lr) = low.split_at_mut(split);
             let (hl, hr) = high.split_at(split);
-            rayon::join(|| recurse(ll, hl, weight), || recurse(lr, hr, weight));
+            rayon::join(
+                || recurse_both(ll, hl, weight),
+                || recurse_both(lr, hr, weight),
+            );
             return;
         }
 
@@ -61,11 +83,20 @@ pub fn fold<F: Field>(values: &mut Vec<F>, weight: F) {
         }
     }
 
-    assert!(values.len().is_multiple_of(2));
-    let half = values.len() / 2;
+    if values.len() <= 1 {
+        return;
+    }
 
+    let half = values.len().next_power_of_two() >> 1;
     let (low, high) = values.split_at_mut(half);
-    recurse(low, high, weight);
+    debug_assert!(low.len() >= high.len());
+    let (low, tail) = low.split_at_mut(high.len());
+    recurse_both(low, high, weight);
+
+    // Tail part where `high` is implicit zero padding
+    // When high = 0 we have *low *= 1 - weight.
+    scalar_mul(tail, F::ONE - weight);
+
     values.truncate(half);
     values.shrink_to_fit();
 }
@@ -94,5 +125,69 @@ pub fn mixed_eval<M: Embedding>(
         mixed_eval(embedding, low, tail, scalar) + mixed_eval(embedding, high, tail, scalar * x)
     } else {
         embedding.mixed_mul(scalar, coeff[0])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_ff::AdditiveGroup;
+    use ark_std::rand::{rngs::StdRng, Rng, SeedableRng};
+    use proptest::{
+        prelude::{Just, Strategy},
+        proptest,
+    };
+
+    use super::*;
+    use crate::algebra::fields::Field64;
+
+    type F = Field64;
+
+    #[test]
+    fn sumcheck_poly_zero_extend() {
+        let power_of_two = (0..16).prop_map(|n| 1_usize << n);
+        let size_zeros = power_of_two.prop_flat_map(|size: usize| {
+            let max_zeros = (size / 2).saturating_sub(1);
+            (Just(size), 0_usize..=max_zeros)
+        });
+        proptest!(|(seed:u64, (pow_two, zeros) in size_zeros)| {
+            let length = pow_two - zeros;
+            let mut rng = StdRng::seed_from_u64(seed);
+            let vector = (0..length)
+                .map(|_| rng.gen::<F>())
+                .collect::<Vec<_>>();
+            let covector = (0..length)
+                .map(|_| rng.gen::<F>())
+                .collect::<Vec<_>>();
+            let mut extended_vector = vector.clone();
+            let mut extended_covector = covector.clone();
+            extended_vector.resize(length + zeros, F::ZERO);
+            extended_covector.resize(length + zeros, F::ZERO);
+            assert_eq!(vector.len().next_power_of_two(), extended_vector.len().next_power_of_two());
+            assert_eq!(compute_sumcheck_polynomial(&vector, &covector), compute_sumcheck_polynomial(&extended_vector, &extended_covector));
+        });
+    }
+
+    #[test]
+    fn fold_zero_extend() {
+        let power_of_two = (0..16).prop_map(|n| 1_usize << n);
+        let size_zeros = power_of_two.prop_flat_map(|size: usize| {
+            let max_zeros = (size / 2).saturating_sub(1);
+            (Just(size), 0_usize..=max_zeros)
+        });
+        proptest!(|(seed:u64, (pow_two, zeros) in size_zeros)| {
+            let length = pow_two - zeros;
+            let mut rng = StdRng::seed_from_u64(seed);
+            let mut vector = (0..length)
+                .map(|_| rng.gen::<F>())
+                .collect::<Vec<_>>();
+            let mut extended_vector = vector.clone();
+            extended_vector.resize(length + zeros, F::ZERO);
+            let weight = rng.gen::<F>();
+
+            fold(&mut vector, weight);
+            assert!(vector.len().is_power_of_two());
+            fold(&mut extended_vector, weight);
+            assert_eq!(vector, extended_vector);
+        });
     }
 }
