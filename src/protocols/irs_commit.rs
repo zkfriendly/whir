@@ -610,6 +610,8 @@ pub(crate) fn num_in_domain_queries(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::iter;
+
     use ark_std::rand::{
         distributions::Standard, prelude::Distribution, rngs::StdRng, Rng, SeedableRng,
     };
@@ -619,62 +621,69 @@ pub(crate) mod tests {
     use crate::{
         algebra::{
             embedding::{Basefield, Compose, Frobenius, Identity},
-            fields, univariate_evaluate,
+            fields,
+            ntt::NTT,
+            univariate_evaluate,
         },
         transcript::{codecs::U64, DomainSeparator},
     };
 
-    // Create a [`Strategy`] for generating [`irs_commit`] configurations.
-    pub fn config<M: Embedding + Clone>(
-        embedding: M,
-        num_vectors: usize,
-        vector_size: usize,
-        interleaving_depth: usize,
-    ) -> impl Strategy<Value = Config<M>>
+    impl<M: Embedding> Config<M>
     where
         M::Source: FftField,
     {
-        assert!(interleaving_depth != 0);
-        assert!(vector_size.is_multiple_of(interleaving_depth));
-        let message_length = vector_size / interleaving_depth;
+        pub fn arbitrary(
+            embedding: M,
+            num_vectors: usize,
+            vector_size: usize,
+            interleaving_depth: usize,
+        ) -> impl Strategy<Value = Config<M>> {
+            assert!(interleaving_depth != 0);
+            assert!(vector_size.is_multiple_of(interleaving_depth));
+            let message_length = vector_size / interleaving_depth;
 
-        // Compute supported NTT domains for F
-        let valid_codeword_lengths = (1..=30)
-            .map(|n| n * message_length)
-            .filter(|&n| ntt::generator::<M::Source>(n).is_some())
-            .collect::<Vec<_>>();
-        let codeword_length = select(valid_codeword_lengths);
+            // Compute supported NTT domains for F
+            let engine = NTT.get::<M::Source>().expect("Unsupported field");
+            let valid_codeword_lengths =
+                iter::successors(engine.next_smooth_order(vector_size), |size| {
+                    engine.next_smooth_order(*size + 1)
+                })
+                .take(4)
+                .collect::<Vec<_>>();
+            dbg!(message_length, &valid_codeword_lengths);
+            let codeword_length = select(valid_codeword_lengths);
 
-        // Combine with a matrix commitment config
-        let codeword_matrix = codeword_length.prop_flat_map(move |codeword_length| {
-            (
-                Just(codeword_length),
-                matrix_commit::tests::config::<M::Source>(
+            // Combine with a matrix commitment config
+            let codeword_matrix = codeword_length.prop_flat_map(move |codeword_length| {
+                (
+                    Just(codeword_length),
+                    matrix_commit::tests::config::<M::Source>(
+                        codeword_length,
+                        interleaving_depth * num_vectors,
+                    ),
+                )
+            });
+
+            (codeword_matrix, 0_usize..=10, 0_usize..=10, bool::ANY).prop_map(
+                move |(
+                    (codeword_length, matrix_commit),
+                    in_domain_samples,
+                    out_domain_samples,
+                    deduplicate_in_domain,
+                )| Config {
+                    embedding: Typed::new(embedding.clone()),
+                    num_vectors,
+                    vector_size,
                     codeword_length,
-                    interleaving_depth * num_vectors,
-                ),
+                    interleaving_depth,
+                    matrix_commit,
+                    johnson_slack: OrderedFloat::default(),
+                    in_domain_samples,
+                    out_domain_samples,
+                    deduplicate_in_domain,
+                },
             )
-        });
-
-        (codeword_matrix, 0_usize..=10, 0_usize..=10, bool::ANY).prop_map(
-            move |(
-                (codeword_length, matrix_commit),
-                in_domain_samples,
-                out_domain_samples,
-                deduplicate_in_domain,
-            )| Config {
-                embedding: Typed::new(embedding.clone()),
-                num_vectors,
-                vector_size,
-                codeword_length,
-                interleaving_depth,
-                matrix_commit,
-                johnson_slack: OrderedFloat::default(),
-                in_domain_samples,
-                out_domain_samples,
-                deduplicate_in_domain,
-            },
-        )
+        }
     }
 
     fn test<M: Embedding>(seed: u64, config: &Config<M>)
@@ -793,7 +802,7 @@ pub(crate) mod tests {
 
         let config = (0_usize..=3, size, 1_usize..=10).prop_flat_map(
             |(num_vectors, size, interleaving_depth)| {
-                config(
+                Config::arbitrary(
                     embedding.clone(),
                     num_vectors,
                     size * interleaving_depth,

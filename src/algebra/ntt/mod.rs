@@ -60,6 +60,8 @@ impl type_map::Family for NttFamily {
 
 /// Trait for a Reed-Solomon encoder implementation for a given field `F`.
 pub trait ReedSolomon<F>: Debug + Send + Sync {
+    fn next_smooth_order(&self, size: usize) -> Option<usize>;
+
     fn interleaved_encode(
         &self,
         interleaved_coeffs: &[&[F]],
@@ -74,6 +76,10 @@ assert_obj_safe!(ReedSolomon<crate::algebra::fields::Field256>);
 pub struct ArkNtt<F: FftField>(PhantomData<F>);
 
 impl<F: FftField> ReedSolomon<F> for ArkNtt<F> {
+    fn next_smooth_order(&self, size: usize) -> Option<usize> {
+        cooley_tukey::next_smooth_order::<F>(size)
+    }
+
     fn interleaved_encode(
         &self,
         interleaved_coeffs: &[&[F]],
@@ -113,19 +119,20 @@ fn ark_ntt<F: FftField>(
     for poly in coeffs {
         assert_eq!(poly.len(), poly_size);
     }
+    assert!(interleaving_depth > 0);
     assert!(poly_size.is_multiple_of(interleaving_depth));
     let message_length = poly_size / interleaving_depth;
     let per_poly_size = codeword_length * interleaving_depth;
     let total_size = per_poly_size * coeffs.len();
 
-    assert!(codeword_length.is_multiple_of(message_length));
-
     // Lay out coefficients in contiguous blocks and zero-pad each block.
     let mut result = vec![F::ZERO; total_size];
-    for (poly_index, poly) in coeffs.iter().enumerate() {
-        for (block_index, block) in poly.chunks_exact(message_length).enumerate() {
-            let dst = poly_index * per_poly_size + block_index * codeword_length;
-            result[dst..dst + message_length].copy_from_slice(block);
+    if poly_size > 0 {
+        for (poly_index, poly) in coeffs.iter().enumerate() {
+            for (block_index, block) in poly.chunks_exact(message_length).enumerate() {
+                let dst = poly_index * per_poly_size + block_index * codeword_length;
+                result[dst..dst + message_length].copy_from_slice(block);
+            }
         }
     }
 

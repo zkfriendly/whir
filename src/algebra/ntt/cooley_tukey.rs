@@ -27,8 +27,9 @@ static ENGINE_CACHE: LazyLock<Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>
 /// Enginge for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
 pub struct NttEngine<F: Field> {
-    order: usize,   // order of omega_orger
-    omega_order: F, // primitive order'th root.
+    order: usize,         // order of omega_orger
+    divisors: Vec<usize>, // divisors of the order.
+    omega_order: F,       // primitive order'th root.
 
     // Roots of small order (zero if unavailable). The naming convention is that omega_foo has order foo.
     half_omega_3_1_plus_2: F, // ½(ω₃ + ω₃²)
@@ -42,6 +43,10 @@ pub struct NttEngine<F: Field> {
 
     // Root lookup table (extended on demand)
     roots: RwLock<Vec<F>>,
+}
+
+pub fn next_smooth_order<F: FftField>(size: usize) -> Option<usize> {
+    NttEngine::<F>::new_from_cache().next_smooth_order(size)
 }
 
 /// Returns the root-of-unity used for a domain of size `size`.
@@ -102,12 +107,24 @@ impl<F: FftField> NttEngine<F> {
 /// Creates a new NttEngine. `omega_order` must be a primitive root of unity of even order `omega`.
 impl<F: Field> NttEngine<F> {
     pub fn new(order: usize, omega_order: F) -> Self {
-        assert!(order.trailing_zeros() > 0, "Order must be a multiple of 2.");
-        // TODO: Assert that omega factors into 2s and 3s.
+        let twos = order.trailing_zeros();
+        let mut odd_part = order >> twos;
+        let mut divisors = Vec::new();
+        divisors.extend((0..twos).map(|k| odd_part << k));
+        while odd_part.is_multiple_of(3) {
+            odd_part /= 3;
+            divisors.extend((0..twos).map(|k| odd_part << k));
+        }
+        assert!(
+            twos > 0 && odd_part == 1,
+            "Order must be of form 2^a·3^b with a > 0."
+        );
         assert_eq!(omega_order.pow([order as u64]), F::ONE);
         assert_ne!(omega_order.pow([order as u64 / 2]), F::ONE);
+        divisors.sort();
         let mut res = Self {
             order,
+            divisors,
             omega_order,
             half_omega_3_1_plus_2: F::ZERO,
             half_omega_3_1_min_2: F::ZERO,
@@ -141,18 +158,32 @@ impl<F: Field> NttEngine<F> {
         res
     }
 
+    /// Returns the smallest NTT-smooth number greater than or equal to `size`.
+    pub fn next_smooth_order(&self, size: usize) -> Option<usize> {
+        dbg!(size, self.order, &self.divisors);
+        dbg!(match self.divisors.binary_search(&size) {
+            Ok(index) | Err(index) => self.divisors.get(index).copied(),
+        })
+    }
+
     pub fn ntt(&self, values: &mut [F]) {
         self.ntt_batch(values, values.len());
     }
 
     pub fn ntt_batch(&self, values: &mut [F], size: usize) {
         assert!(values.len().is_multiple_of(size));
+        if size <= 1 {
+            return;
+        }
         let roots = self.roots_table(size);
         self.ntt_dispatch(values, &roots, size);
     }
 
     /// Inverse NTT. Does not aply 1/n scaling factor.
     pub fn intt(&self, values: &mut [F]) {
+        if values.len() <= 1 {
+            return;
+        }
         values[1..].reverse();
         self.ntt(values);
     }
@@ -160,6 +191,9 @@ impl<F: Field> NttEngine<F> {
     /// Inverse batch NTT. Does not aply 1/n scaling factor.
     pub fn intt_batch(&self, values: &mut [F], size: usize) {
         assert!(values.len().is_multiple_of(size));
+        if size <= 1 {
+            return;
+        }
 
         #[cfg(not(feature = "parallel"))]
         values.chunks_exact_mut(size).for_each(|values| {
@@ -175,6 +209,9 @@ impl<F: Field> NttEngine<F> {
     }
 
     pub fn checked_root(&self, order: usize) -> Option<F> {
+        if order == 0 {
+            return Some(F::ONE);
+        }
         self.order
             .is_multiple_of(order)
             .then(|| self.omega_order.pow([(self.order / order) as u64]))
@@ -187,6 +224,12 @@ impl<F: Field> NttEngine<F> {
 
     /// Returns a cached table of roots of unity of the given order.
     fn roots_table(&self, order: usize) -> RwLockReadGuard<'_, Vec<F>> {
+        dbg!(self.order, &self.divisors, order);
+        assert!(
+            self.order.is_multiple_of(order),
+            "No subgroup of order {order}."
+        );
+
         // Precompute more roots of unity if requested.
         let roots = self.roots.read().unwrap();
         if roots.is_empty() || !roots.len().is_multiple_of(order) {
