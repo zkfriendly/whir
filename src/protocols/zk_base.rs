@@ -32,14 +32,14 @@ pub struct Config<F: FftField> {
 }
 
 impl<F: FftField> Config<F> {
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.sumcheck.initial_size
     }
 
     pub fn prove<H, R>(
         &self,
         prover_state: &mut ProverState<H, R>,
-        vector: Vec<F>,
+        vector: &[F],
         witness: &irs_commit::Witness<F>,
         mut covector: Vec<F>,
         sum: F,
@@ -54,7 +54,7 @@ impl<F: FftField> Config<F> {
         Hash: ProverMessage<[H::U]>,
         Standard: Distribution<F>,
     {
-        debug_assert_eq!(dot(&vector, &covector), sum);
+        debug_assert_eq!(dot(vector, &covector), sum);
         if self.size() == 0 {
             return (Vec::new(), F::ZERO);
         }
@@ -71,7 +71,7 @@ impl<F: FftField> Config<F> {
 
         // RLC the mask with the vector
         let mask_rlc = prover_state.verifier_message::<F>();
-        let mut masked_vector = scalar_mul_add_new(&vector, mask_rlc, &mask);
+        let mut masked_vector = scalar_mul_add_new(vector, mask_rlc, &mask);
         prover_state.prover_messages(&masked_vector);
 
         // Send combined IRS randomness. (r^* in paper)
@@ -167,7 +167,7 @@ mod tests {
         pub fn arbitrary(size: usize, mask_length: usize) -> impl Strategy<Value = Self> {
             let commit =
                 irs_commit::Config::arbitrary(Identity::<F>::new(), 1, size, mask_length, 1);
-            commit.prop_map(move |commit| Config {
+            commit.prop_map(move |commit| Self {
                 commit: irs_commit::Config {
                     out_domain_samples: 0,
                     ..commit
@@ -183,9 +183,9 @@ mod tests {
     }
 
     #[cfg_attr(feature = "tracing", instrument)]
-    fn test_config<F: FftField>(seed: u64, config: &Config<F>)
+    fn test_config<F>(seed: u64, config: &Config<F>)
     where
-        F: Codec,
+        F: FftField + Codec,
         Standard: Distribution<F>,
     {
         // Pseudo-random Instance
@@ -201,13 +201,8 @@ mod tests {
         // Prover
         let mut prover_state = ProverState::new_std(&ds);
         let witness = config.commit.commit(&mut prover_state, &[&vector]);
-        let (point, value) = config.prove(
-            &mut prover_state,
-            vector.clone(),
-            &witness,
-            covector.clone(),
-            sum,
-        );
+        let (point, value) =
+            config.prove(&mut prover_state, &vector, &witness, covector.clone(), sum);
         assert_eq!(multilinear_extend(&covector, &point), value);
         let proof = prover_state.proof();
 
@@ -225,9 +220,8 @@ mod tests {
         verifier_state.check_eof().unwrap();
     }
 
-    fn test<F: FftField>()
+    fn test<F: FftField + Codec>()
     where
-        F: Codec,
         Standard: Distribution<F>,
     {
         crate::tests::init();

@@ -1,7 +1,6 @@
 //! Protocol for grinding and verifying proof of work.
 
 use core::slice;
-use std::u64;
 
 use ark_std::rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -44,7 +43,7 @@ pub fn difficulty(threshold: u64) -> Bits {
 }
 
 impl Config {
-    pub fn none() -> Self {
+    pub const fn none() -> Self {
         Self {
             hash_id: BLAKE3,
             threshold: u64::MAX,
@@ -194,8 +193,6 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use std::u64;
-
     use proptest::{proptest, strategy::Strategy};
     #[cfg(feature = "tracing")]
     use tracing::instrument;
@@ -207,9 +204,9 @@ mod tests {
     };
 
     impl Config {
-        pub fn arbitrary() -> impl Strategy<Value = Config> {
+        pub fn arbitrary() -> impl Strategy<Value = Self> {
             (hash_for_size(64), (u64::MAX >> 6)..)
-                .prop_map(|(hash_id, threshold)| Config { hash_id, threshold })
+                .prop_map(|(hash_id, threshold)| Self { hash_id, threshold })
         }
     }
 

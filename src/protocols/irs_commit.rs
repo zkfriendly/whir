@@ -222,7 +222,7 @@ where
         &self.embedding
     }
 
-    pub fn num_messages(&self) -> usize {
+    pub const fn num_messages(&self) -> usize {
         self.interleaving_depth * self.num_vectors
     }
 
@@ -652,7 +652,7 @@ pub(crate) mod tests {
             vector_size: usize,
             mask_length: usize,
             interleaving_depth: usize,
-        ) -> impl Strategy<Value = Config<M>> {
+        ) -> impl Strategy<Value = Self> {
             assert!(interleaving_depth != 0);
             assert!(vector_size.is_multiple_of(interleaving_depth));
             let message_length = vector_size / interleaving_depth + mask_length;
@@ -684,7 +684,7 @@ pub(crate) mod tests {
                     in_domain_samples,
                     out_domain_samples,
                     deduplicate_in_domain,
-                )| Config {
+                )| Self {
                     embedding: Typed::new(embedding.clone()),
                     num_vectors,
                     vector_size,

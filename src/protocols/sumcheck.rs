@@ -156,8 +156,6 @@ impl<F: Field> fmt::Display for Config<F> {
 mod tests {
 
     // TODO: Proptest based tests checking invariants and post conditions.
-    use std::u64;
-
     use ark_std::rand::{
         distributions::{Distribution, Standard},
         rngs::StdRng,
@@ -179,8 +177,7 @@ mod tests {
                 dbg!(initial_size, num_rounds);
                 let num_rounds =
                     num_rounds.min(initial_size.next_power_of_two().trailing_zeros() as usize);
-                dbg!(num_rounds);
-                Config {
+                Self {
                     field: Type::new(),
                     initial_size,
                     num_rounds,
@@ -191,9 +188,9 @@ mod tests {
     }
 
     #[cfg_attr(feature = "tracing", instrument)]
-    fn test_config<F: Field>(seed: u64, config: &Config<F>)
+    fn test_config<F>(seed: u64, config: &Config<F>)
     where
-        F: Codec,
+        F: Field + Codec,
         Standard: Distribution<F>,
     {
         // Pseudo-random Instance
@@ -216,16 +213,8 @@ mod tests {
         assert_eq!(covector.len(), config.final_size());
         assert_eq!(dot(&vector, &covector), sum);
         if config.final_size() == 1 {
-            // TODO: Implement implicit zero extension in multilinear_extend.
-            let mut extended_vector = initial_vector.clone();
-            extended_vector.resize(extended_vector.len().next_power_of_two(), F::ZERO);
-            let mut extended_covector = initial_covector.clone();
-            extended_covector.resize(extended_covector.len().next_power_of_two(), F::ZERO);
-            assert_eq!(multilinear_extend(&extended_vector, &point.0), vector[0]);
-            assert_eq!(
-                multilinear_extend(&extended_covector, &point.0),
-                covector[0]
-            );
+            assert_eq!(multilinear_extend(&initial_vector, &point.0), vector[0]);
+            assert_eq!(multilinear_extend(&initial_covector, &point.0), covector[0]);
         } else {
             // TODO: Check correct folding.
         }
@@ -242,9 +231,9 @@ mod tests {
         verifier_state.check_eof().unwrap();
     }
 
-    fn test_sumcheck<F: Field>()
+    fn test_sumcheck<F>()
     where
-        F: Codec,
+        F: Field + Codec,
         Standard: Distribution<F>,
     {
         crate::tests::init();

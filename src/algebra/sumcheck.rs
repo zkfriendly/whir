@@ -40,7 +40,7 @@ pub fn compute_sumcheck_polynomial<F: Field>(a: &[F], b: &[F]) -> (F, F) {
     let non_padded = a.len().min(b.len());
     let a = &a[..non_padded];
     let b = &b[..non_padded];
-    if a.len() == 0 {
+    if a.is_empty() {
         return (F::ZERO, F::ZERO);
     }
     if a.len() == 1 {
