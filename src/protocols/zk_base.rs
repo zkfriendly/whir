@@ -8,7 +8,6 @@ use ark_ff::FftField;
 use ark_std::rand::{distributions::Standard, prelude::Distribution, CryptoRng, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use spongefish::{Decoding, VerificationResult};
-use tracing::instrument;
 
 use crate::{
     algebra::{dot, embedding::Identity, linear_form::Evaluate, multilinear_extend},
@@ -57,12 +56,12 @@ impl<F: FftField> Config<F> {
             return (Vec::new(), F::ZERO);
         }
 
-        // Create masking vectors.
+        // Create masking vector.
         let mask = (0..vector.len())
             .map(|_| prover_state.rng().gen())
             .collect::<Vec<F>>();
 
-        // Commit to the masking vectors.
+        // Commit to the masking vector.
         let mask_witness = self.commit.commit(prover_state, &[&mask]);
 
         // Compute and send linear form of mask (μ' in paper).
@@ -149,7 +148,6 @@ impl<F: FftField> Config<F> {
         // Compute implied MLE of the linear form
         // f*(r) · l(r) = sum  =>  l(r) = sum / f*(r)
         let masked_mle = multilinear_extend(&masked_vector, &point.0);
-        dbg!(masked_sum, masked_mle);
         verify!(!masked_mle.is_zero());
         let linear_mle = masked_sum / masked_mle;
 
@@ -161,6 +159,8 @@ impl<F: FftField> Config<F> {
 mod tests {
     use ark_std::rand::{rngs::StdRng, SeedableRng};
     use proptest::{prelude::Strategy, proptest};
+    #[cfg(feature = "tracing")]
+    use tracing::instrument;
 
     use super::*;
     use crate::{

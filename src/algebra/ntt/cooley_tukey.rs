@@ -3,11 +3,7 @@
 //! Implements the √N Cooley-Tukey six-step algorithm to achieve parallelism with good locality.
 //! A global cache is used for twiddle factors.
 
-use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, RwLock, RwLockReadGuard},
-};
+use std::sync::{RwLock, RwLockReadGuard};
 
 use ark_ff::{FftField, Field};
 #[cfg(feature = "parallel")]
@@ -16,16 +12,12 @@ use {crate::utils::workload_size, rayon::prelude::*, std::cmp::max};
 use super::{
     transpose,
     utils::{lcm, sqrt_factor},
+    ReedSolomon,
 };
-
-/// Global cache for NTT engines, indexed by field.
-// TODO: Skip `LazyLock` when `HashMap::with_hasher` becomes const.
-// see https://github.com/rust-lang/rust/issues/102575
-static ENGINE_CACHE: LazyLock<Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Enginge for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
+#[derive(Debug)]
 pub struct NttEngine<F: Field> {
     order: usize,         // order of omega_orger
     divisors: Vec<usize>, // divisors of the order.
@@ -45,52 +37,9 @@ pub struct NttEngine<F: Field> {
     roots: RwLock<Vec<F>>,
 }
 
-pub fn next_smooth_order<F: FftField>(size: usize) -> Option<usize> {
-    NttEngine::<F>::new_from_cache().next_smooth_order(size)
-}
-
-/// Returns the root-of-unity used for a domain of size `size`.
-pub fn generator<F: FftField>(size: usize) -> Option<F> {
-    NttEngine::<F>::new_from_cache().checked_root(size)
-}
-
-/// Compute the NTT of a slice of field elements using a cached engine.
-pub fn ntt<F: FftField>(values: &mut [F]) {
-    NttEngine::<F>::new_from_cache().ntt(values);
-}
-
-/// Compute the many NTTs of size `size` using a cached engine.
-pub fn ntt_batch<F: FftField>(values: &mut [F], size: usize) {
-    NttEngine::<F>::new_from_cache().ntt_batch(values, size);
-}
-
-/// Compute the inverse NTT of a slice of field element without the 1/n scaling factor, using a cached engine.
-pub fn intt<F: FftField>(values: &mut [F]) {
-    NttEngine::<F>::new_from_cache().intt(values);
-}
-
-/// Compute the inverse NTT of multiple slice of field elements, each of size `size`, without the 1/n scaling factor and using a cached engine.
-pub fn intt_batch<F: FftField>(values: &mut [F], size: usize) {
-    NttEngine::<F>::new_from_cache().intt_batch(values, size);
-}
-
 impl<F: FftField> NttEngine<F> {
-    /// Get or create a cached engine for the field `F`.
-    pub fn new_from_cache() -> Arc<Self> {
-        let mut cache = ENGINE_CACHE.lock().unwrap();
-        let type_id = TypeId::of::<F>();
-        #[allow(clippy::option_if_let_else)]
-        if let Some(engine) = cache.get(&type_id) {
-            engine.clone().downcast::<Self>().unwrap()
-        } else {
-            let engine = Arc::new(Self::new_from_fftfield());
-            cache.insert(type_id, engine.clone());
-            engine
-        }
-    }
-
     /// Construct a new engine from the field's `FftField` trait.
-    pub(crate) fn new_from_fftfield() -> Self {
+    pub fn new_from_fftfield() -> Self {
         // TODO: Support SMALL_SUBGROUP
         if F::TWO_ADICITY <= 63 {
             Self::new(1 << F::TWO_ADICITY, F::TWO_ADIC_ROOT_OF_UNITY)
@@ -156,14 +105,6 @@ impl<F: Field> NttEngine<F> {
             res.omega_16_9 = res.omega_16_1.pow([9]);
         }
         res
-    }
-
-    /// Returns the smallest NTT-smooth number greater than or equal to `size`.
-    pub fn next_smooth_order(&self, size: usize) -> Option<usize> {
-        dbg!(size, self.order, &self.divisors);
-        dbg!(match self.divisors.binary_search(&size) {
-            Ok(index) | Err(index) => self.divisors.get(index).copied(),
-        })
     }
 
     pub fn ntt(&self, values: &mut [F]) {
@@ -280,7 +221,7 @@ impl<F: Field> NttEngine<F> {
     /// Recurses using the sqrt(N) Cooley-Tukey Six step NTT algorithm.
     fn ntt_recurse(&self, values: &mut [F], roots: &[F], size: usize) {
         debug_assert_eq!(values.len() % size, 0);
-        let n1 = sqrt_factor(size);
+        let n1 = sqrt_factor(size); // TODO: Replace with divisors search.
         let n2 = size / n1;
 
         transpose(values, n1, n2);
@@ -398,6 +339,71 @@ impl<F: Field> NttEngine<F> {
             }
             size => self.ntt_recurse(values, roots, size),
         }
+    }
+}
+
+impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
+    fn next_order(&self, size: usize) -> Option<usize> {
+        match self.divisors.binary_search(&size) {
+            Ok(index) | Err(index) => self.divisors.get(index).copied(),
+        }
+    }
+
+    fn evaluation_point(&self, order: usize, index: usize) -> Option<F> {
+        if index >= order || !self.order.is_multiple_of(order) {
+            return None;
+        }
+        let exponent = ((self.order / order) * index) % self.order;
+        Some(self.omega_order.pow([exponent as u64]))
+    }
+
+    fn interleaved_encode(
+        &self,
+        interleaved_coeffs: &[&[F]],
+        mask: &[F],
+        codeword_length: usize,
+        interleaving_depth: usize,
+    ) -> Vec<F> {
+        if !mask.is_empty() {
+            todo!();
+        }
+        if interleaved_coeffs.is_empty() {
+            return Vec::new();
+        }
+        let poly_size = interleaved_coeffs[0].len();
+        for poly in interleaved_coeffs {
+            assert_eq!(poly.len(), poly_size);
+        }
+        assert!(interleaving_depth > 0);
+        assert!(poly_size.is_multiple_of(interleaving_depth));
+        let message_length = poly_size / interleaving_depth;
+        assert!(message_length <= codeword_length);
+        let per_poly_size = codeword_length * interleaving_depth;
+        let total_size = per_poly_size * interleaved_coeffs.len();
+
+        // Lay out coefficients in contiguous blocks and zero-pad each block.
+        let mut result = vec![F::ZERO; total_size];
+        if message_length > 0 {
+            for (poly_index, poly) in interleaved_coeffs.iter().enumerate() {
+                for (block_index, block) in poly.chunks_exact(message_length).enumerate() {
+                    let dst = poly_index * per_poly_size + block_index * codeword_length;
+                    result[dst..dst + message_length].copy_from_slice(block);
+                }
+            }
+        }
+        // TODO: Add masks.
+
+        // TODO: Do coset NTT when sizes allow.
+
+        // NTT each block, then transpose to row-major order with vectorss
+        // stacked horizontally.
+        self.ntt_batch(&mut result, codeword_length);
+        transpose(
+            &mut result,
+            interleaved_coeffs.len() * interleaving_depth,
+            codeword_length,
+        );
+        result
     }
 }
 
@@ -761,22 +767,6 @@ mod tests {
                 idx += 2 * row;
             }
         }
-    }
-
-    #[test]
-    fn test_new_from_cache_singleton() {
-        // Retrieve two instances of the engine
-        let engine1 = NttEngine::<Field64>::new_from_cache();
-        let engine2 = NttEngine::<Field64>::new_from_cache();
-
-        // Both instances should point to the same object in memory
-        assert!(Arc::ptr_eq(&engine1, &engine2));
-
-        // Verify that the cached instance has the expected properties
-        assert!(engine1.order.is_power_of_two());
-
-        let expected_root = Field64::TWO_ADIC_ROOT_OF_UNITY;
-        assert_eq!(engine1.root(engine1.order), expected_root);
     }
 
     #[test]

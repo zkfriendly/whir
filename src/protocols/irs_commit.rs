@@ -32,13 +32,8 @@ use tracing::instrument;
 
 use crate::{
     algebra::{
-        dot,
-        embedding::Embedding,
-        fields::FieldWithSize,
-        lift,
-        linear_form::UnivariateEvaluation,
-        mixed_univariate_evaluate,
-        ntt::{self, interleaved_rs_encode},
+        dot, embedding::Embedding, fields::FieldWithSize, lift, linear_form::UnivariateEvaluation,
+        mixed_univariate_evaluate, ntt,
     },
     engines::EngineId,
     hash::Hash,
@@ -222,8 +217,10 @@ where
         &self.embedding
     }
 
+    #[deprecated]
     pub fn generator(&self) -> M::Source {
-        ntt::generator(self.codeword_length).expect("Subgroup of requested size not found")
+        ntt::evaluation_point(self.codeword_length, 1)
+            .expect("Subgroup of requested size not found")
     }
 
     pub fn message_length(&self) -> usize {
@@ -315,7 +312,8 @@ where
         assert!(vectors.iter().all(|p| p.len() == self.vector_size));
 
         // Interleaved RS Encode the vectorss
-        let matrix = interleaved_rs_encode(vectors, self.codeword_length, self.interleaving_depth);
+        let matrix =
+            ntt::interleaved_rs_encode(vectors, &[], self.codeword_length, self.interleaving_depth);
 
         // Commit to the matrix
         let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
@@ -644,12 +642,11 @@ pub(crate) mod tests {
 
             // Compute supported NTT domains for F
             let engine = NTT.get::<M::Source>().expect("Unsupported field");
-            let valid_codeword_lengths =
-                iter::successors(engine.next_smooth_order(vector_size), |size| {
-                    engine.next_smooth_order(*size + 1)
-                })
-                .take(4)
-                .collect::<Vec<_>>();
+            let valid_codeword_lengths = iter::successors(engine.next_order(vector_size), |size| {
+                engine.next_order(*size + 1)
+            })
+            .take(4)
+            .collect::<Vec<_>>();
             dbg!(message_length, &valid_codeword_lengths);
             let codeword_length = select(valid_codeword_lengths);
 
@@ -796,7 +793,7 @@ pub(crate) mod tests {
         Standard: Distribution<M::Source> + Distribution<M::Target>,
     {
         let valid_sizes = (1..=1024)
-            .filter(|&n| ntt::generator::<M::Source>(n).is_some())
+            .filter(|&n| ntt::evaluation_point::<M::Source>(n, 1).is_some())
             .collect::<Vec<_>>();
         let size = select(valid_sizes);
 
