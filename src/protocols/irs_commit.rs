@@ -24,7 +24,7 @@ use std::{
 };
 
 use ark_ff::{AdditiveGroup, FftField, Field};
-use ark_std::rand::{distributions::Standard, prelude::Distribution, CryptoRng, Rng, RngCore};
+use ark_std::rand::{distributions::Standard, prelude::Distribution, CryptoRng, RngCore};
 use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
