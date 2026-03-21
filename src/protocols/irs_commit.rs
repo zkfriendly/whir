@@ -43,7 +43,7 @@ use crate::{
         VerifierMessage, VerifierState,
     },
     type_info::Typed,
-    utils::zip_strict,
+    utils::{chunks_exact_or_empty, zip_strict},
     verify,
 };
 
@@ -217,15 +217,13 @@ where
         &self.embedding
     }
 
-    #[deprecated]
-    pub fn generator(&self) -> M::Source {
-        ntt::evaluation_point(self.codeword_length, 1)
-            .expect("Subgroup of requested size not found")
-    }
-
     pub fn message_length(&self) -> usize {
         assert!(self.vector_size.is_multiple_of(self.interleaving_depth));
         self.vector_size / self.interleaving_depth
+    }
+
+    pub fn evaluation_point(&self, index: usize) -> M::Source {
+        ntt::evaluation_point::<M::Source>(self.codeword_length, index).unwrap()
     }
 
     pub fn rate(&self) -> f64 {
@@ -312,8 +310,11 @@ where
         assert!(vectors.iter().all(|p| p.len() == self.vector_size));
 
         // Interleaved RS Encode the vectorss
-        let matrix =
-            ntt::interleaved_rs_encode(vectors, &[], self.codeword_length, self.interleaving_depth);
+        let messages = vectors
+            .iter()
+            .flat_map(|v| chunks_exact_or_empty(v, self.message_length(), self.interleaving_depth))
+            .collect::<Vec<_>>();
+        let matrix = ntt::interleaved_rs_encode(&messages, &[], self.codeword_length);
 
         // Commit to the matrix
         let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
@@ -488,10 +489,9 @@ where
         );
 
         // Compute corresponding in-domain evaluation points
-        let generator = self.generator();
         let points = indices
             .iter()
-            .map(|index| generator.pow([*index as u64]))
+            .map(|index| self.evaluation_point(*index))
             .collect::<Vec<_>>();
 
         (indices, points)

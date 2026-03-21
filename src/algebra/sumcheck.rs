@@ -142,6 +142,9 @@ pub(crate) mod tests {
 
     /// Zero-pad to the next power of two.
     pub fn zero_pad<F: Field>(values: &[F]) -> Vec<F> {
+        if values.is_empty() {
+            return Vec::new();
+        }
         let mut vec = values.to_vec();
         vec.resize(vec.len().next_power_of_two(), F::ZERO);
         vec
@@ -177,7 +180,7 @@ pub(crate) mod tests {
             let weight = rng.gen::<F>();
 
             fold(&mut vector, weight);
-            assert!(vector.len().is_power_of_two());
+            assert!(vector.is_empty() || vector.len().is_power_of_two());
             fold(&mut extended_vector, weight);
             assert_eq!(vector, extended_vector);
         });

@@ -357,29 +357,19 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         Some(self.omega_order.pow([exponent as u64]))
     }
 
-    fn interleaved_encode(
-        &self,
-        interleaved_coeffs: &[&[F]],
-        mask: &[F],
-        codeword_length: usize,
-        interleaving_depth: usize,
-    ) -> Vec<F> {
+    fn interleaved_encode(&self, messages: &[&[F]], masks: &[F], codeword_length: usize) -> Vec<F> {
         assert!(self.order.is_multiple_of(codeword_length));
-        assert!(interleaving_depth > 0);
-        if interleaved_coeffs.is_empty() {
+        if messages.is_empty() {
+            assert!(masks.is_empty());
             return Vec::new();
         }
-        let poly_size = interleaved_coeffs[0].len();
-        assert!(poly_size.is_multiple_of(interleaving_depth));
-        for poly in interleaved_coeffs {
-            assert_eq!(poly.len(), poly_size);
-        }
-        let num_messages = interleaving_depth * interleaved_coeffs.len();
-        assert!(mask.len().is_multiple_of(num_messages));
-        let mask_length = mask.len() / num_messages;
-        let coefs_length = poly_size / interleaving_depth;
-        let message_length = coefs_length + mask_length;
-        assert!(message_length <= codeword_length);
+        let num_messages = messages.len();
+        let message_len = messages[0].len();
+        assert!(messages.iter().all(|m| m.len() == message_len));
+        assert!(masks.len().is_multiple_of(num_messages));
+        let mask_length = masks.len() / num_messages;
+        let masked_message_length = message_len + mask_length;
+        assert!(masked_message_length <= codeword_length);
 
         // Coset-NTT: instead of doing one codeword-length NTT on mostly zeros,
         // do `num_cosets` many `coset_size`-point NTTs on twisted coefficient
@@ -392,7 +382,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         // You can also see this as applying a first round of Cooley-Tukey with
         // N = coset_size × num_cosets, and solving it directly by observing that
         // only the first coset is non-zero.
-        let mut coset_size = self.next_order(message_length).unwrap();
+        let mut coset_size = self.next_order(masked_message_length).unwrap();
         while !codeword_length.is_multiple_of(coset_size) {
             coset_size = self.next_order(coset_size + 1).unwrap();
         }
@@ -403,18 +393,15 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         let mut result = vec![F::ZERO; num_messages * codeword_length];
 
         let omega_n = self.root(codeword_length);
-        let messages = interleaved_coeffs
-            .iter()
-            .flat_map(|poly| chunks_exact_or_empty(poly, coefs_length, interleaving_depth));
-        let masks = chunks_exact_or_empty(mask, mask_length, num_messages);
+        let masks = chunks_exact_or_empty(masks, mask_length, num_messages);
         let codewords = result.chunks_exact_mut(codeword_length);
         for ((message, mask), codeword) in zip_strict(zip_strict(messages, masks), codewords) {
             let cosets = codeword.chunks_exact_mut(coset_size);
             let mut twist_base = F::ONE;
             for (c, coset) in cosets.enumerate() {
                 if c == 0 {
-                    coset[..coefs_length].copy_from_slice(message);
-                    coset[coefs_length..coefs_length + mask_length].copy_from_slice(mask);
+                    coset[..message_len].copy_from_slice(message);
+                    coset[message_len..message_len + mask_length].copy_from_slice(mask);
                 } else {
                     twist_base *= omega_n;
                     let mut twiddle = F::ONE;
@@ -422,7 +409,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
                         *dst = *src * twiddle;
                         twiddle *= twist_base;
                     }
-                    for (src, dst) in mask.iter().zip(coset[coefs_length..].iter_mut()) {
+                    for (src, dst) in mask.iter().zip(coset[message_len..].iter_mut()) {
                         *dst = *src * twiddle;
                         twiddle *= twist_base;
                     }
@@ -438,11 +425,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         transpose(&mut result, num_cosets, coset_size);
 
         // Transpose to row-major order with vectors stacked horizontally.
-        transpose(
-            &mut result,
-            interleaved_coeffs.len() * interleaving_depth,
-            codeword_length,
-        );
+        transpose(&mut result, num_messages, codeword_length);
         result
     }
 }

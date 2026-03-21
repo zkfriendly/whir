@@ -75,27 +75,17 @@ pub trait ReedSolomon<F>: Debug + Send + Sync {
     /// Returns `None` if the `order` is not supported or `index ≥ order`.
     fn evaluation_point(&self, order: usize, index: usize) -> Option<F>;
 
-    /// Compute a batch NTT.
+    /// Compute a masked interleaved Reed-Solomon encoding.
     ///
-    /// The function signature is designed specifically for [`irs_commit`].
-    ///
-    /// `coeffs` are `num_vector` slices of `vector_length` elements.
-    /// `mask` is a `num_messages` × `mask_length` matrix.
-    /// `codeword_length` must be an NTT-smooth number >= `message_length`
-    /// `interleaving_depth` must be at least `1`.
+    /// `messages` are `num_messages` slices of `message_length` elements.
+    /// `masks` is a `num_messages` × `mask_length` matrix of blinding coefficients.
+    /// `codeword_length` must be an NTT-smooth number >= `message_length + mask_length`.
     /// returns an `codeword_length × num_messages` matrix.
     ///
-    /// where
+    /// Each output value is the univariate polynomial evaluation in the evaluation point
+    /// corresponding with the index of a coefficient list formed by concatenating message and mask.
     ///
-    /// `message_length = vector_length / interleaving_depth + mask_length`.
-    /// `num_messages = num_vectors ·  interleaving_depth`.
-    fn interleaved_encode(
-        &self,
-        interleaved_coeffs: &[&[F]],
-        mask: &[F],
-        codeword_length: usize,
-        interleaving_depth: usize,
-    ) -> Vec<F>;
+    fn interleaved_encode(&self, messages: &[&[F]], masks: &[F], codeword_length: usize) -> Vec<F>;
 }
 
 assert_obj_safe!(ReedSolomon<crate::algebra::fields::Field256>);
@@ -113,19 +103,13 @@ pub fn evaluation_point<F: 'static>(order: usize, index: usize) -> Option<F> {
 }
 
 pub fn interleaved_rs_encode<F: 'static>(
-    interleaved_coeffs: &[&[F]],
-    mask: &[F],
+    messages: &[&[F]],
+    masks: &[F],
     codeword_length: usize,
-    interleaving_depth: usize,
 ) -> Vec<F> {
     NTT.get::<F>()
         .expect("Unsupported NTT field.")
-        .interleaved_encode(
-            interleaved_coeffs,
-            mask,
-            codeword_length,
-            interleaving_depth,
-        )
+        .interleaved_encode(messages, masks, codeword_length)
 }
 
 #[cfg(test)]
@@ -155,68 +139,61 @@ mod tests {
         Standard: Distribution<F>,
     {
         let cases = (
-            0_usize..3,
+            0_usize..10,
             0_usize..(1 << 10),
             0_usize..(1 << 10),
-            1_usize..=8,
             1_usize..=32,
         )
-            .prop_flat_map(
-                |(num_vectors, coeffs_length, mask_length, interleaving_depth, sample_size)| {
-                    let valid_codeword_lengths =
-                        valid_codeword_lengths::<F>(coeffs_length + mask_length, 6);
-                    select(valid_codeword_lengths).prop_flat_map(move |codeword_length| {
-                        let sample_size = sample_size.min(codeword_length.max(1));
-                        (
-                            Just(num_vectors),
-                            Just(coeffs_length),
-                            Just(mask_length),
-                            Just(codeword_length),
-                            Just(interleaving_depth),
-                            collection::vec(0..codeword_length, sample_size),
-                        )
-                    })
-                },
-            );
+            .prop_flat_map(|(num_messages, message_length, mask_length, sample_size)| {
+                let valid_codeword_lengths =
+                    valid_codeword_lengths::<F>(message_length + mask_length, 6);
+                select(valid_codeword_lengths).prop_flat_map(move |codeword_length| {
+                    let sample_size = sample_size.min(codeword_length.max(1));
+                    (
+                        Just(num_messages),
+                        Just(message_length),
+                        Just(mask_length),
+                        Just(codeword_length),
+                        collection::vec(0..codeword_length, sample_size),
+                    )
+                })
+            });
         proptest!(|(
             seed: u64,
-            (num_vectors, coeffs_length, mask_length, codeword_length, interleaving_depth, sampled_indices) in cases
+            (num_messages, message_length, mask_length, codeword_length, sampled_indices) in cases
         )| {
-            let block_length = interleaving_depth * num_vectors;
             let mut rng = StdRng::seed_from_u64(seed);
-            let vector = (0..num_vectors)
+            let messages = (0..num_messages)
                 .map(|_| {
-                    (0..coeffs_length * interleaving_depth)
+                    (0..message_length)
                         .map(|_| rng.gen::<F>())
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
-            let mask = (0..mask_length * block_length)
+            let masks = (0..mask_length * num_messages)
                 .map(|_| rng.gen::<F>())
                 .collect::<Vec<_>>();
-            let vector_refs = vector.iter().map(|v| v.as_slice()).collect::<Vec<_>>();
+            let message_refs = messages.iter().map(|v| v.as_slice()).collect::<Vec<_>>();
             let codeword = ntt.interleaved_encode(
-                &vector_refs,
-                &mask,
+                &message_refs,
+                &masks,
                 codeword_length,
-                interleaving_depth,
             );
 
             // Output must be the right size.
-            assert_eq!(codeword.len(), codeword_length * block_length);
+            assert_eq!(codeword.len(), codeword_length * num_messages);
 
             // Output values are polynomial evaluations in the evaluation points.
             let mut evaluation_points = Vec::new();
             for &index in &sampled_indices {
                 let evaluation_point = ntt.evaluation_point(codeword_length, index).unwrap();
                 evaluation_points.push(evaluation_point);
-                let evaluations = &codeword[index * block_length.. (index + 1) * block_length];
-                let messages = vector_refs.iter().flat_map(|v| chunks_exact_or_empty(v, coeffs_length, interleaving_depth));
-                let masks = chunks_exact_or_empty(&mask, mask_length, block_length);
-                for ((coeffs, mask), value) in zip_strict(zip_strict(messages, masks), evaluations) {
+                let evaluations = &codeword[index * num_messages.. (index + 1) * num_messages];
+                let masks = chunks_exact_or_empty(&masks, mask_length, num_messages);
+                for ((message, mask), value) in zip_strict(zip_strict(&messages, masks), evaluations) {
                     assert_eq!(*value,
-                        univariate_evaluate(coeffs, evaluation_point)
-                        + evaluation_point.pow([coeffs_length as u64])
+                        univariate_evaluate(message, evaluation_point)
+                        + evaluation_point.pow([message_length as u64])
                         * univariate_evaluate(mask, evaluation_point));
                 }
             }
