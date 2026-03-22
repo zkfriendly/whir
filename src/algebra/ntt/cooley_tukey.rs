@@ -377,7 +377,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
 
             #[cfg(not(feature = "rs_in_order"))]
             let index = transpose_permute(index, num_cosets, coset_size);
-            result.push(roots[index * step % roots.len()])
+            result.push(roots[index * step % roots.len()]);
         }
         result
     }
