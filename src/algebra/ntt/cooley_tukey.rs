@@ -360,9 +360,9 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         assert!(masked_message_length <= codeword_length);
         assert!(self.order.is_multiple_of(codeword_length));
         let mut result = Vec::new();
-        let roots = self.roots_table(codeword_length);
-        assert!(roots.len().is_multiple_of(codeword_length));
-        let step = roots.len() / codeword_length;
+        let generator = self
+            .omega_order
+            .pow([(self.order / codeword_length) as u64]);
 
         // Coset transformation
         let mut coset_size = self.next_order(masked_message_length).unwrap();
@@ -377,7 +377,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
 
             #[cfg(not(feature = "rs_in_order"))]
             let index = transpose_permute(index, num_cosets, coset_size);
-            result.push(roots[index * step % roots.len()]);
+            result.push(generator.pow([index as u64]));
         }
         result
     }
