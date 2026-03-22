@@ -392,28 +392,13 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         // `coset_size`, zero-padding each block as needed.
         let mut result = vec![F::ZERO; num_messages * codeword_length];
 
-        let omega_n = self.root(codeword_length);
         let masks = chunks_exact_or_empty(masks, mask_length, num_messages);
         let codewords = result.chunks_exact_mut(codeword_length);
         for ((message, mask), codeword) in zip_strict(zip_strict(messages, masks), codewords) {
-            let cosets = codeword.chunks_exact_mut(coset_size);
-            let mut twist_base = F::ONE;
-            for (c, coset) in cosets.enumerate() {
-                if c == 0 {
-                    coset[..message_len].copy_from_slice(message);
-                    coset[message_len..message_len + mask_length].copy_from_slice(mask);
-                } else {
-                    twist_base *= omega_n;
-                    let mut twiddle = F::ONE;
-                    for (src, dst) in message.iter().zip(coset.iter_mut()) {
-                        *dst = *src * twiddle;
-                        twiddle *= twist_base;
-                    }
-                    for (src, dst) in mask.iter().zip(coset[message_len..].iter_mut()) {
-                        *dst = *src * twiddle;
-                        twiddle *= twist_base;
-                    }
-                }
+            // FFT[a 0 0 0] = [a a a a], so just replicate input in coset dimentsion.
+            for coset in codeword.chunks_exact_mut(coset_size) {
+                coset[..message_len].copy_from_slice(message);
+                coset[message_len..message_len + mask_length].copy_from_slice(mask);
             }
         }
 
@@ -421,6 +406,12 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         // coset-major `(num_cosets × coset_size)` layout into standard codeword
         // order `(coset_size × num_cosets)`, where global index is
         // `c + j * num_cosets`.
+        apply_twiddles(
+            &mut result,
+            self.roots_table(codeword_length).as_slice(),
+            num_cosets,
+            coset_size,
+        );
         self.ntt_batch(&mut result, coset_size);
         transpose(&mut result, num_cosets, coset_size);
 
