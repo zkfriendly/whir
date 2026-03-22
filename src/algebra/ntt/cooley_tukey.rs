@@ -14,10 +14,9 @@ use super::{
     utils::{lcm, sqrt_factor},
     ReedSolomon,
 };
-use crate::{
-    algebra::ntt::transpose::transpose_permute,
-    utils::{chunks_exact_or_empty, zip_strict},
-};
+#[cfg(not(feature = "rs_in_order"))]
+use crate::algebra::ntt::transpose::transpose_permute;
+use crate::utils::{chunks_exact_or_empty, zip_strict};
 
 /// Enginge for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
@@ -370,6 +369,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
         while !codeword_length.is_multiple_of(coset_size) {
             coset_size = self.next_order(coset_size + 1).unwrap();
         }
+        #[cfg(not(feature = "rs_in_order"))]
         let num_cosets = codeword_length / coset_size;
 
         for &index in indices {
