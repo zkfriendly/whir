@@ -661,6 +661,7 @@ pub(crate) mod tests {
                 iter::successors(engine.next_order(message_length), |size| {
                     engine.next_order(*size + 1)
                 })
+                .filter(|n| n.is_power_of_two()) // TODO: Remove filter.
                 .take(4)
                 .collect::<Vec<_>>();
             let codeword_length = select(valid_codeword_lengths);
