@@ -159,31 +159,31 @@ fn transpose_square_swap<F: Sized + Send>(mut a: MatrixMut<'_, F>, mut b: Matrix
     // - Enables parallel execution
     if 2 * size * size > workload_size::<F>() {
         let n = size / 2;
-        let (aa, ab, ac, ad) = a.split_quadrants(n, n);
-        let (ba, bb, bc, bd) = b.split_quadrants(n, n);
+        let (a_tl, a_tr, a_bl, a_br) = a.split_quadrants(n, n);
+        let (b_tl, b_tr, b_bl, b_br) = b.split_quadrants(n, n);
 
         #[cfg(feature = "parallel")]
         rayon::join(
             || {
                 rayon::join(
-                    || transpose_square_swap(aa, ba),
-                    || transpose_square_swap(ab, bc),
+                    || transpose_square_swap(a_tl, b_tl),
+                    || transpose_square_swap(a_tr, b_bl),
                 )
             },
             || {
                 rayon::join(
-                    || transpose_square_swap(ac, bb),
-                    || transpose_square_swap(ad, bd),
+                    || transpose_square_swap(a_bl, b_tr),
+                    || transpose_square_swap(a_br, b_br),
                 )
             },
         );
 
         #[cfg(not(feature = "parallel"))]
         {
-            transpose_square_swap(aa, ba);
-            transpose_square_swap(ab, bc);
-            transpose_square_swap(ac, bb);
-            transpose_square_swap(ad, bd);
+            transpose_square_swap(a_tl, b_tl);
+            transpose_square_swap(a_tr, b_bl);
+            transpose_square_swap(a_bl, b_tr);
+            transpose_square_swap(a_br, b_br);
         }
     } else {
         // Optimized 2×2 loop unrolling for larger blocks

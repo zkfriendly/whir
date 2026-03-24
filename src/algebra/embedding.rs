@@ -40,7 +40,7 @@ pub trait Embedding:
     }
 }
 
-/// The identiy embedding of a field in into itself.
+/// The identity embedding of a field in into itself.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default, Serialize, Deserialize,
 )]

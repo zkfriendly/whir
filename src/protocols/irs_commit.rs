@@ -1,6 +1,6 @@
 //! Interleaved Reed-Solomon Commitment Protocol
 //!
-//! Commits to a `num_vectorss` by `vector_size` matrix over `F`.
+//! Commits to a `num_vectors` by `vector_size` matrix over `F`.
 //!
 //! This will be reshaped into a `vector_size / interleaving_depth` by
 //! `num_vectors * interleaving_depth` matrix. Then each row is encoded
@@ -311,7 +311,7 @@ where
         assert_eq!(vectors.len(), self.num_vectors);
         assert!(vectors.iter().all(|p| p.len() == self.vector_size));
 
-        // Interleaved RS Encode the vectorss
+        // Interleaved RS Encode the vectors
         let matrix = interleaved_rs_encode(vectors, self.codeword_length, self.interleaving_depth);
 
         // Commit to the matrix

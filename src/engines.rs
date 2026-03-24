@@ -1,4 +1,4 @@
-//! Registery for Engines based on protocol id.
+//! Registry for Engines based on protocol id.
 //!
 //! This allows implementations to be agnostic to the underlying engine implementation.
 

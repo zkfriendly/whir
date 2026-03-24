@@ -24,7 +24,7 @@ use super::{
 static ENGINE_CACHE: LazyLock<Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Enginge for computing NTTs over arbitrary fields.
+/// Engine for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
 pub struct NttEngine<F: Field> {
     order: usize,   // order of omega_orger
@@ -151,13 +151,13 @@ impl<F: Field> NttEngine<F> {
         self.ntt_dispatch(values, &roots, size);
     }
 
-    /// Inverse NTT. Does not aply 1/n scaling factor.
+    /// Inverse NTT. Does not apply 1/n scaling factor.
     pub fn intt(&self, values: &mut [F]) {
         values[1..].reverse();
         self.ntt(values);
     }
 
-    /// Inverse batch NTT. Does not aply 1/n scaling factor.
+    /// Inverse batch NTT. Does not apply 1/n scaling factor.
     pub fn intt_batch(&self, values: &mut [F], size: usize) {
         assert!(values.len().is_multiple_of(size));
 

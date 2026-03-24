@@ -15,7 +15,7 @@ jobs:
     name: Build & Test (all features)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install nightly toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -30,7 +30,7 @@ jobs:
     name: Clippy (all features)
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install nightly toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install nightly toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -57,10 +57,18 @@ jobs:
     name: Check for unused dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install nightly toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly
       - name: machete
         uses: bnjbvr/cargo-machete@main
+
+  typos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@v1.44.0
+        with:
+          files: .
