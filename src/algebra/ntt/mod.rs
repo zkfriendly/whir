@@ -129,7 +129,7 @@ fn ark_ntt<F: FftField>(
         }
     }
 
-    // NTT each block, then transpose to row-major order with vectorss
+    // NTT each block, then transpose to row-major order with vectors
     // stacked horizontally.
     ntt_batch(&mut result, codeword_length);
     transpose(

@@ -7,7 +7,7 @@ use crate::engines::EngineId;
 /// Configuration parameters for WHIR proofs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProtocolParameters {
-    /// Wheter to require unique decoding.
+    /// Whether to require unique decoding.
     pub unique_decoding: bool,
     /// The logarithmic inverse rate for sampling.
     pub starting_log_inv_rate: usize,

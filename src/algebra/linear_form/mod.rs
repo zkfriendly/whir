@@ -1,4 +1,4 @@
-//! Linear Forms that commited vectors can be openened against.
+//! Linear Forms that committed vectors can be opened against.
 
 mod covector;
 mod multilinear_extension;

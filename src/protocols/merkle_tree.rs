@@ -93,7 +93,7 @@ impl Config {
             leaves.len()
         );
 
-        // Allocate nodes and fill with leaf layer. This implicitely pads the first layer.
+        // Allocate nodes and fill with leaf layer. This implicitly pads the first layer.
         let mut nodes = leaves;
         nodes.resize(self.num_nodes(), Hash::default());
         let (mut previous, mut remaining) = nodes.split_at_mut(1 << self.layers.len());
@@ -155,7 +155,7 @@ impl Config {
         assert_eq!(witness.nodes.len(), self.num_nodes());
         assert!(indices.iter().all(|&i| i < self.num_leaves));
 
-        // Abstract execution of verify algorithm wrting required hashes.
+        // Abstract execution of verify algorithm writing required hashes.
         let mut indices = indices.to_vec();
         indices.sort_unstable();
         indices.dedup();
