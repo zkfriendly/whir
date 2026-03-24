@@ -16,7 +16,13 @@ use super::{
 };
 #[cfg(not(feature = "rs_in_order"))]
 use crate::algebra::ntt::transpose::transpose_permute;
-use crate::utils::{chunks_exact_or_empty, zip_strict};
+use crate::{
+    algebra::ntt::utils::divisors,
+    utils::{chunks_exact_or_empty, zip_strict},
+};
+
+// Supported primes
+const PRIMES: [usize; 2] = [2, 3];
 
 /// Enginge for computing NTTs over arbitrary fields.
 /// Assumes the field has large two-adicity.
@@ -43,40 +49,48 @@ pub struct NttEngine<F: Field> {
 impl<F: FftField> NttEngine<F> {
     /// Construct a new engine from the field's `FftField` trait.
     pub fn new_from_fftfield() -> Self {
-        // TODO: Support SMALL_SUBGROUP
-        if F::TWO_ADICITY <= 63 {
-            Self::new(1 << F::TWO_ADICITY, F::TWO_ADIC_ROOT_OF_UNITY)
-        } else {
-            let mut generator = F::TWO_ADIC_ROOT_OF_UNITY;
-            for _ in 0..(F::TWO_ADICITY - 63) {
-                generator = generator.square();
+        let (mut omega, mut order) = if let (Some(mut omega), Some(b), Some(k)) = (
+            F::LARGE_SUBGROUP_ROOT_OF_UNITY,
+            F::SMALL_SUBGROUP_BASE,
+            F::SMALL_SUBGROUP_BASE_ADICITY,
+        ) {
+            // Extract supported subgroup q from small group b.
+            let mut order = 1;
+            let mut remaining = (b as usize).checked_pow(k).expect("Small group too large.");
+            for p in PRIMES {
+                while remaining.is_multiple_of(p) {
+                    order *= p;
+                    remaining /= p;
+                }
             }
-            Self::new(1 << 63, generator)
+            omega = omega.pow([remaining as u64]);
+            (omega, order)
+        } else {
+            (F::TWO_ADIC_ROOT_OF_UNITY, 1)
+        };
+        let twos = F::TWO_ADICITY.min(order.leading_zeros()) as usize;
+        for _ in 0..(F::TWO_ADICITY as usize - twos) {
+            omega.square_in_place();
         }
+        order <<= twos;
+        Self::new(order, omega)
     }
 }
 
 /// Creates a new NttEngine. `omega_order` must be a primitive root of unity of even order `omega`.
 impl<F: Field> NttEngine<F> {
     pub fn new(order: usize, omega_order: F) -> Self {
-        let twos = order.trailing_zeros();
-        let mut odd_part = order >> twos;
-        let mut divisors = Vec::new();
-        divisors.extend((0..twos).map(|k| odd_part << k));
-        while odd_part.is_multiple_of(3) {
-            odd_part /= 3;
-            divisors.extend((0..twos).map(|k| odd_part << k));
-        }
-        assert!(
-            twos > 0 && odd_part == 1,
-            "Order must be of form 2^a·3^b with a > 0."
-        );
+        // Make sure `omega_order` is a primitive root of unity.
         assert_eq!(omega_order.pow([order as u64]), F::ONE);
-        assert_ne!(omega_order.pow([order as u64 / 2]), F::ONE);
-        divisors.sort_unstable();
+        for prime in PRIMES {
+            if order.is_multiple_of(prime) {
+                assert_ne!(omega_order.pow([(order / prime) as u64]), F::ONE);
+            }
+        }
+
         let mut res = Self {
             order,
-            divisors,
+            divisors: divisors(order, &PRIMES),
             omega_order,
             half_omega_3_1_plus_2: F::ZERO,
             half_omega_3_1_min_2: F::ZERO,
@@ -421,7 +435,7 @@ impl<F: FftField> ReedSolomon<F> for NttEngine<F> {
             messages,
             chunks_exact_or_empty(masks, mask_length, num_messages),
         ) {
-            // FFT[a 0 0 0] = [a a a a], so just replicate input in coset dimentsion.
+            // FFT[a 0 0 0] = [a a a a], so just replicate input in coset dimension.
             for _ in 0..num_cosets {
                 result.extend_from_slice(message);
                 result.extend_from_slice(mask);
@@ -559,13 +573,13 @@ mod tests {
         let engine = NttEngine::<Field64>::new_from_fftfield();
 
         // Verify that the order of the engine is correctly set
-        assert!(engine.order.is_power_of_two());
+        assert_eq!(engine.order, 3 << 32);
 
         // Verify that the root of unity is correctly initialized
-        let expected_root = Field64::TWO_ADIC_ROOT_OF_UNITY;
-        let computed_root = engine.root(engine.order);
-        assert_eq!(computed_root.pow([engine.order as u64]), Field64::ONE);
-        assert_eq!(computed_root, expected_root);
+        assert_eq!(
+            engine.omega_order,
+            Field64::GENERATOR.pow([(18446744069414584320 / engine.order) as u64])
+        );
     }
 
     #[test]
