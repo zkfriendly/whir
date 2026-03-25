@@ -578,7 +578,7 @@ mod tests {
         // Verify that the root of unity is correctly initialized
         assert_eq!(
             engine.omega_order,
-            Field64::GENERATOR.pow([(18446744069414584320 / engine.order) as u64])
+            Field64::GENERATOR.pow([(18_446_744_069_414_584_320 / engine.order) as u64])
         );
     }
 
