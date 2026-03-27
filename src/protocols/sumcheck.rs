@@ -89,19 +89,23 @@ impl<F: Field> Config<F> {
         let mut mask_sum = F::ZERO;
         let mut mask_rlc = F::ONE;
         if !masks.is_empty() {
-            mask_sum = F::from(1 << self.num_rounds.saturating_sub(1))
-                * masks
-                    .chunks_exact(self.mask_length)
-                    .map(eval_01) // s(0) + s(1)
-                    .sum::<F>();
+            let sum_multiple = F::from(1 << self.num_rounds.saturating_sub(1));
+            mask_sum = masks
+                .chunks_exact(self.mask_length)
+                .map(eval_01) // s(0) + s(1)
+                .sum::<F>()
+                * sum_multiple;
             prover_state.prover_message(&mask_sum);
             mask_rlc = prover_state.verifier_message();
         };
 
         // We do a staggered Sumcheck loop so we can merge the inner fold+compute loops.
+        let mut univariate = Vec::new();
         let mut res = Vec::with_capacity(self.num_rounds);
         let mut folding_randomness = None;
-        for round in 0..self.num_rounds {
+        for (round, mask) in
+            chunks_exact_or_empty(masks, self.mask_length, self.num_rounds).enumerate()
+        {
             // Fold and compute sumcheck polynomial in one pass.
             let (c0, c2) = if let Some(w) = folding_randomness {
                 fold_and_compute_polynomial(a, b, w)
@@ -109,26 +113,23 @@ impl<F: Field> Config<F> {
                 compute_sumcheck_polynomial(a, b)
             };
             let c1 = *sum - c0.double() - c2;
-            let mut round_univariate = None;
 
             // Optionally mask with univariate
-            if !masks.is_empty() {
+            if !mask.is_empty() {
+                // Initialize to round masking univariate polynomial.
+                univariate.clear();
                 let sum_multiple = F::from(1 << self.num_rounds.saturating_sub(round + 1));
-                let mask = masks.chunks_exact(self.mask_length).nth(round).unwrap();
-                let mask_offset = (mask_sum - sum_multiple * eval_01(mask)) * half;
-                let mut univariate = Vec::new();
-                for (i, m) in mask.iter().enumerate() {
-                    let mut coeff = *m * sum_multiple;
-                    if i == 0 {
-                        coeff += mask_offset;
-                    }
-                    if let Some(&c) = [c0, c1, c2].get(i) {
-                        coeff += mask_rlc * c;
-                    }
-                    univariate.push(coeff);
-                }
+                univariate.extend(mask.iter().map(|m| sum_multiple * *m));
+
+                // Add constant term from previous and future masks.
+                univariate[0] += (mask_sum - sum_multiple * eval_01(mask)) * half;
+
+                // Add plain sumcheck polynomial
+                univariate[0] += mask_rlc * c0;
+                univariate[1] += mask_rlc * c1;
+                univariate[2] += mask_rlc * c2;
+
                 prover_state.prover_messages(&univariate);
-                round_univariate = Some(univariate);
             } else {
                 prover_state.prover_messages(&[c0, c2]);
             }
@@ -139,7 +140,7 @@ impl<F: Field> Config<F> {
             res.push(r);
             *sum = (c2 * r + c1) * r + c0;
             if !masks.is_empty() {
-                let masked_sum = univariate_evaluate(round_univariate.as_ref().unwrap(), r);
+                let masked_sum = univariate_evaluate(&univariate, r);
                 mask_sum = masked_sum - mask_rlc * *sum;
             }
             folding_randomness = Some(r);
