@@ -126,7 +126,9 @@ impl<M: Embedding> Config<M> {
             self.initial_skip_pow.verify(verifier_state)?;
             folding_randomness
         } else {
-            self.initial_sumcheck.verify(verifier_state, &mut the_sum)?
+            self.initial_sumcheck
+                .verify(verifier_state, &mut the_sum)?
+                .0
         };
         round_folding_randomness.push(folding_randomness);
 
@@ -179,7 +181,10 @@ impl<M: Embedding> Config<M> {
             round_constraints.push((constraint_rlc_coeffs, constraint_weights));
 
             // Sumcheck round
-            let folding_randomness = round_config.sumcheck.verify(verifier_state, &mut the_sum)?;
+            let folding_randomness = round_config
+                .sumcheck
+                .verify(verifier_state, &mut the_sum)?
+                .0;
             round_folding_randomness.push(folding_randomness);
 
             prev_commitment = RoundCommitment::Round { commitment };
@@ -221,7 +226,7 @@ impl<M: Embedding> Config<M> {
         }
 
         // Final sumcheck
-        let final_sumcheck_randomness = self.final_sumcheck.verify(verifier_state, &mut the_sum)?;
+        let final_sumcheck_randomness = self.final_sumcheck.verify(verifier_state, &mut the_sum)?.0;
         round_folding_randomness.push(final_sumcheck_randomness.clone());
 
         // Compute folding randomness across all rounds

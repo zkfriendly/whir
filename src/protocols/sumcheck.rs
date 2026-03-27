@@ -160,7 +160,7 @@ impl<F: Field> Config<F> {
         &self,
         verifier_state: &mut VerifierState<H>,
         sum: &mut F,
-    ) -> VerificationResult<Vec<F>>
+    ) -> VerificationResult<(Vec<F>, F)>
     where
         H: DuplexSpongeInterface,
         F: Codec<[H::U]>,
@@ -172,9 +172,10 @@ impl<F: Field> Config<F> {
         );
         assert!(self.mask_length == 0 || self.mask_length >= 3);
 
+        let mut mask_rlc = F::ONE;
         if self.mask_length > 0 && self.num_rounds > 0 {
             let mask_sum: F = verifier_state.prover_message()?;
-            let mask_rlc: F = verifier_state.verifier_message();
+            mask_rlc = verifier_state.verifier_message();
             *sum = mask_sum + mask_rlc * *sum;
         };
 
@@ -200,7 +201,7 @@ impl<F: Field> Config<F> {
             // Update the sum
             *sum = univariate_evaluate(&univariate, folding_randomness);
         }
-        Ok(res)
+        Ok((res, mask_rlc))
     }
 }
 
@@ -318,10 +319,11 @@ mod tests {
         // Verifier
         let mut verifier_sum = initial_sum;
         let mut verifier_state = VerifierState::new_std(&ds, &proof);
-        let verifier_point = config
+        let (verifier_point, verifier_mask_rlc) = config
             .verify(&mut verifier_state, &mut verifier_sum)
             .unwrap();
         assert_eq!(verifier_point, point);
+        assert_eq!(verifier_mask_rlc, mask_rlc);
         assert_eq!(verifier_sum, sum);
         verifier_state.check_eof().unwrap();
     }

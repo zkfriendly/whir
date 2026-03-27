@@ -153,7 +153,7 @@ impl<F: Field> Config<F> {
             let masks = verifier_state
                 .prover_messages_vec(self.commit.mask_length * self.commit.num_messages())?;
             let evals = self.commit.verify(verifier_state, &[commitment])?;
-            let point = self.sumcheck.verify(verifier_state, &mut sum)?;
+            let point = self.sumcheck.verify(verifier_state, &mut sum)?.0;
 
             for (&point, value) in zip_strict(&evals.points, evals.values(&[F::ONE])) {
                 // We expected `f(x) + x^l · g(x)` where l = deg(f) + 1, f is the message and g the mask.
@@ -191,7 +191,7 @@ impl<F: Field> Config<F> {
 
         // Sumcheck on masked inner product
         let mut masked_sum = mask_sum + mask_rlc * sum;
-        let point = self.sumcheck.verify(verifier_state, &mut masked_sum)?;
+        let point = self.sumcheck.verify(verifier_state, &mut masked_sum)?.0;
 
         // Compute implied MLE of the linear form
         // f*(r) · l(r) = sum  =>  l(r) = sum / f*(r)
