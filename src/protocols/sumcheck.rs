@@ -116,20 +116,22 @@ impl<F: Field> Config<F> {
                 let mut mask_sum = F::ZERO;
                 let sum_multiple =
                     F::from(2).pow([self.num_rounds.saturating_sub(round + 1) as u64]);
+                let future_multiple =
+                    F::from(2).pow([self.num_rounds.saturating_sub(round + 2) as u64]);
                 for (j, mask) in masks.chunks_exact(self.mask_length).enumerate() {
                     if j < round {
-                        mask_sum += univariate_evaluate(mask, res[j]);
+                        mask_sum += univariate_evaluate(mask, res[j]) * sum_multiple;
                     }
                     if j > round {
-                        mask_sum += eval_01(mask);
+                        mask_sum += eval_01(mask) * future_multiple;
                     }
                 }
                 let mask = masks.chunks_exact(self.mask_length).nth(round).unwrap();
                 let mut univariate = Vec::new();
                 for (i, m) in mask.iter().enumerate() {
-                    let mut coeff = *m;
+                    let mut coeff = *m * sum_multiple;
                     if i == 0 {
-                        coeff += mask_sum * sum_multiple;
+                        coeff += mask_sum;
                     }
                     if let Some(&c) = [c0, c1, c2].get(i) {
                         coeff += mask_rlc * c;
@@ -379,6 +381,20 @@ mod tests {
                 initial_size: 3,
                 round_pow: proof_of_work::Config::none(),
                 num_rounds: 2,
+                mask_length: 3,
+            },
+        );
+    }
+
+    #[test]
+    fn test_three_rounds() {
+        test_config(
+            0,
+            &Config::<Field64> {
+                field: Type::new(),
+                initial_size: 5,
+                round_pow: proof_of_work::Config::none(),
+                num_rounds: 3,
                 mask_length: 3,
             },
         );
