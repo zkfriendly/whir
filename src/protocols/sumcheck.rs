@@ -83,20 +83,19 @@ impl<F: Field> Config<F> {
         assert_eq!(b.len(), self.initial_size);
         debug_assert_eq!(dot(a, b), *sum);
         assert_eq!(masks.len(), self.num_rounds * self.mask_length);
+        let half = F::from(2).inverse().unwrap();
 
         // Send mask sum and get combination randomness.
-        let mask_rlc = if !masks.is_empty() {
-            // f(0) + f(1) = f_0 + f_0 + f_1 + ⋯ + f_d.
-            let mask_sum = masks
-                .chunks_exact(self.mask_length)
-                .map(eval_01) // s(0) + s(1)
-                .sum::<F>()
-                * F::from(2).pow([self.num_rounds.saturating_sub(1) as u64]);
+        let mut mask_sum = F::ZERO;
+        let mut mask_rlc = F::ONE;
+        if !masks.is_empty() {
+            mask_sum = F::from(1 << self.num_rounds.saturating_sub(1))
+                * masks
+                    .chunks_exact(self.mask_length)
+                    .map(eval_01) // s(0) + s(1)
+                    .sum::<F>();
             prover_state.prover_message(&mask_sum);
-            let mask_rlc: F = prover_state.verifier_message();
-            Some(mask_rlc)
-        } else {
-            None
+            mask_rlc = prover_state.verifier_message();
         };
 
         // We do a staggered Sumcheck loop so we can merge the inner fold+compute loops.
@@ -110,36 +109,26 @@ impl<F: Field> Config<F> {
                 compute_sumcheck_polynomial(a, b)
             };
             let c1 = *sum - c0.double() - c2;
+            let mut round_univariate = None;
 
             // Optionally mask with univariate
-            if let Some(mask_rlc) = mask_rlc {
-                let mut mask_sum = F::ZERO;
-                let sum_multiple =
-                    F::from(2).pow([self.num_rounds.saturating_sub(round + 1) as u64]);
-                let future_multiple =
-                    F::from(2).pow([self.num_rounds.saturating_sub(round + 2) as u64]);
-                for (j, mask) in masks.chunks_exact(self.mask_length).enumerate() {
-                    if j < round {
-                        mask_sum += univariate_evaluate(mask, res[j]) * sum_multiple;
-                    }
-                    if j > round {
-                        mask_sum += eval_01(mask) * future_multiple;
-                    }
-                }
+            if !masks.is_empty() {
+                let sum_multiple = F::from(1 << self.num_rounds.saturating_sub(round + 1));
                 let mask = masks.chunks_exact(self.mask_length).nth(round).unwrap();
+                let mask_offset = (mask_sum - sum_multiple * eval_01(mask)) * half;
                 let mut univariate = Vec::new();
                 for (i, m) in mask.iter().enumerate() {
                     let mut coeff = *m * sum_multiple;
                     if i == 0 {
-                        coeff += mask_sum;
+                        coeff += mask_offset;
                     }
                     if let Some(&c) = [c0, c1, c2].get(i) {
                         coeff += mask_rlc * c;
                     }
                     univariate.push(coeff);
                 }
-                dbg!(&univariate);
                 prover_state.prover_messages(&univariate);
+                round_univariate = Some(univariate);
             } else {
                 prover_state.prover_messages(&[c0, c2]);
             }
@@ -149,6 +138,10 @@ impl<F: Field> Config<F> {
             let r = prover_state.verifier_message::<F>();
             res.push(r);
             *sum = (c2 * r + c1) * r + c0;
+            if !masks.is_empty() {
+                let masked_sum = univariate_evaluate(round_univariate.as_ref().unwrap(), r);
+                mask_sum = masked_sum - mask_rlc * *sum;
+            }
             folding_randomness = Some(r);
         }
         if let Some(w) = folding_randomness {
@@ -157,17 +150,7 @@ impl<F: Field> Config<F> {
             fold(b, w);
         }
 
-        // Add now constant mask offset to sum.
-        let (mask_sum, mask_rlc) = if let Some(mask_rlc) = mask_rlc {
-            let masked_sum = zip_strict(&res, masks.chunks_exact(self.mask_length))
-                .map(|(x, c)| univariate_evaluate(c, *x))
-                .sum::<F>();
-            *sum = masked_sum + mask_rlc * *sum;
-            (masked_sum, mask_rlc)
-        } else {
-            (F::ZERO, F::ONE)
-        };
-
+        *sum = mask_sum + mask_rlc * *sum;
         (res, mask_sum, mask_rlc)
     }
 
@@ -201,7 +184,6 @@ impl<F: Field> Config<F> {
                 for c in &mut univariate {
                     *c = verifier_state.prover_message()?;
                 }
-                dbg!(&univariate);
                 // Check h(0) + h(1) = sum
                 verify!(eval_01(&univariate) == *sum);
             } else {
