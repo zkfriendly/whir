@@ -20,8 +20,7 @@ use crate::{
         VerifierMessage, VerifierState,
     },
     type_info::Type,
-    utils::{chunks_exact_or_empty, zip_strict},
-    verify,
+    utils::chunks_exact_or_empty,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -115,7 +114,9 @@ impl<F: Field> Config<F> {
             let c1 = *sum - c0.double() - c2;
 
             // Optionally mask with univariate
-            if !mask.is_empty() {
+            if mask.is_empty() {
+                prover_state.prover_messages(&[c0, c2]);
+            } else {
                 // Initialize to round masking univariate polynomial.
                 univariate.clear();
                 let sum_multiple = F::from(1 << self.num_rounds.saturating_sub(round + 1));
@@ -129,9 +130,8 @@ impl<F: Field> Config<F> {
                 univariate[1] += mask_rlc * c1;
                 univariate[2] += mask_rlc * c2;
 
-                prover_state.prover_messages(&univariate);
-            } else {
-                prover_state.prover_messages(&[c0, c2]);
+                prover_state.prover_message(&univariate[0]);
+                prover_state.prover_messages(&univariate[2..]);
             }
 
             // Receive the random evaluation point and update the sum
@@ -181,18 +181,14 @@ impl<F: Field> Config<F> {
         let mut univariate = vec![F::ZERO; self.mask_length.max(3)];
         let mut res = Vec::with_capacity(self.num_rounds);
         for _ in 0..self.num_rounds {
-            if self.mask_length > 0 {
-                for c in &mut univariate {
-                    *c = verifier_state.prover_message()?;
-                }
-                // Check h(0) + h(1) = sum
-                verify!(eval_01(&univariate) == *sum);
-            } else {
-                // Receive sumcheck polynomial c0 and c2, derive c1.
-                univariate[0] = verifier_state.prover_message()?;
-                univariate[2] = verifier_state.prover_message()?;
-                univariate[1] = *sum - univariate[0].double() - univariate[2];
+            // Receive all but linear coefficient.
+            univariate[0] = verifier_state.prover_message()?;
+            for c in &mut univariate[2..] {
+                *c = verifier_state.prover_message()?;
             }
+
+            // Derive linear coefficient from relation `univariate(0) + univariate(1) = sum`
+            univariate[1] = *sum - univariate[0].double() - univariate[2..].iter().sum::<F>();
 
             // Check proof of work (if any)
             self.round_pow.verify(verifier_state)?;
@@ -230,7 +226,6 @@ fn eval_01<F: Field>(coefficients: &[F]) -> F {
 
 #[cfg(test)]
 mod tests {
-
     // TODO: Proptest based tests checking invariants and post conditions.
     use ark_std::rand::{
         distributions::{Distribution, Standard},
@@ -248,6 +243,7 @@ mod tests {
             multilinear_extend, random_vector,
         },
         transcript::DomainSeparator,
+        utils::zip_strict,
     };
 
     impl<F: Field> Config<F> {
