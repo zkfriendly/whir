@@ -96,7 +96,7 @@ impl<F: Field> Config<F> {
                 * sum_multiple;
             prover_state.prover_message(&mask_sum);
             mask_rlc = prover_state.verifier_message();
-        };
+        }
 
         // We do a staggered Sumcheck loop so we can merge the inner fold+compute loops.
         let mut univariate = Vec::new();
@@ -177,7 +177,7 @@ impl<F: Field> Config<F> {
             let mask_sum: F = verifier_state.prover_message()?;
             mask_rlc = verifier_state.verifier_message();
             *sum = mask_sum + mask_rlc * *sum;
-        };
+        }
 
         let mut univariate = vec![F::ZERO; self.mask_length.max(3)];
         let mut res = Vec::with_capacity(self.num_rounds);
@@ -209,10 +209,11 @@ impl<F: Field> fmt::Display for Config<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "size {} rounds {} pow {:.2}",
+            "size {} rounds {} pow {:.2} ℓ_zk {}",
             self.initial_size,
             self.num_rounds,
-            self.round_pow.difficulty()
+            self.round_pow.difficulty(),
+            self.mask_length
         )
     }
 }

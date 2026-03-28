@@ -1,5 +1,7 @@
 use std::{borrow::Cow, time::Instant};
 
+#[cfg(feature = "rs_in_order")]
+use ark_ff::Field;
 use ark_std::rand::distributions::{Distribution, Standard};
 use clap::Parser;
 use whir::{
@@ -302,10 +304,10 @@ where
 
     // Evaluation constraint
     let points: Vec<_> = (0..num_evaluations)
-        .map(|x| MultilinearPoint(vec![F::from(x as u64); num_variables]))
+        .map(|x| vec![F::from(x as u64); num_variables])
         .collect();
     for point in &points {
-        let linear_form = Box::new(MultilinearExtension::new(point.0.clone()));
+        let linear_form = Box::new(MultilinearExtension::new(point.clone()));
         evaluations.push(linear_form.evaluate(&embedding, &vector));
         linear_forms.push(linear_form.clone());
         prove_linear_forms.push(linear_form);

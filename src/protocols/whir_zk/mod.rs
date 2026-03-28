@@ -6,6 +6,7 @@ mod verifier;
 
 use std::fmt::Display;
 
+use ark_ff::Field;
 use serde::{Deserialize, Serialize};
 
 pub use self::committer::{Commitment, Witness};
@@ -68,7 +69,7 @@ impl BlindingSizePolicy {
 /// ZK WHIR configuration: witness-side WHIR + blinding-side WHIR.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(bound = "")]
-pub struct Config<F: FftField> {
+pub struct Config<F: Field> {
     pub blinded_commitment: whir::Config<Identity<F>>,
     pub blinding_commitment: whir::Config<Identity<F>>,
 }
@@ -251,7 +252,7 @@ mod tests {
         algebra::{
             fields::Field64,
             linear_form::{Covector, Evaluate, LinearForm, MultilinearExtension},
-            MultilinearPoint,
+            random_vector,
         },
         hash,
         parameters::ProtocolParameters,
@@ -377,8 +378,9 @@ mod tests {
         let params = make_test_config(1);
 
         let vector = vec![F::ONE; TEST_NUM_COEFFS];
-        let point = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let form = MultilinearExtension { point: point.0 };
+        let form = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
         let evaluation = form.evaluate(params.blinded_commitment.embedding(), &vector);
         let forms: Vec<Box<dyn LinearForm<F>>> = vec![Box::new(form)];
         prove_and_verify(
@@ -398,10 +400,12 @@ mod tests {
         let (v0, v1) = make_two_poly_vectors(17, 3);
         let vectors = [&v0[..], &v1[..]];
 
-        let p0 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let p1 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let f0 = MultilinearExtension { point: p0.0 };
-        let f1 = MultilinearExtension { point: p1.0 };
+        let f0 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
+        let f1 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
         let evaluations = compute_evaluations(&params, &[&f0, &f1], &vectors);
 
         let forms: Vec<Box<dyn LinearForm<F>>> = vec![Box::new(f0), Box::new(f1)];
@@ -424,10 +428,12 @@ mod tests {
         let (v0, v1) = make_two_poly_vectors(29, 7);
         let vectors = [&v0[..], &v1[..]];
 
-        let p0 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let p1 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let f0 = MultilinearExtension { point: p0.0 };
-        let f1 = MultilinearExtension { point: p1.0 };
+        let f0 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
+        let f1 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
         let evaluations = compute_evaluations(&params, &[&f0, &f1], &vectors);
 
         let forms: Vec<Box<dyn LinearForm<F>>> = vec![Box::new(f0), Box::new(f1)];
@@ -476,10 +482,12 @@ mod tests {
         let (v0, v1) = make_two_poly_vectors(13, 11);
         let vectors = [&v0[..], &v1[..]];
 
-        let p0 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let p1 = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let f0 = MultilinearExtension { point: p0.0 };
-        let f1 = MultilinearExtension { point: p1.0 };
+        let f0 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
+        let f1 = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
         let evaluations = compute_evaluations(&params, &[&f0, &f1], &vectors);
 
         let forms: Vec<Box<dyn LinearForm<F>>> = vec![Box::new(f0), Box::new(f1)];
@@ -535,8 +543,9 @@ mod tests {
         let params = make_test_config(1);
 
         let vector = vec![F::ONE; TEST_NUM_COEFFS];
-        let point = MultilinearPoint::rand(&mut rng, TEST_NUM_VARIABLES);
-        let form = MultilinearExtension { point: point.0 };
+        let form = MultilinearExtension {
+            point: random_vector(&mut rng, TEST_NUM_VARIABLES),
+        };
         let correct_evaluation = form.evaluate(params.blinded_commitment.embedding(), &vector);
         let wrong_evaluation = correct_evaluation + F::from(42u64);
 
