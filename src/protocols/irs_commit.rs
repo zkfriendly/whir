@@ -21,6 +21,7 @@ use std::{
     f64::{self, consts::LOG2_10},
     fmt,
     ops::Neg,
+    sync::{Arc, LazyLock},
 };
 
 use ark_ff::{AdditiveGroup, Field};
@@ -42,6 +43,7 @@ use crate::{
         Codec, Decoding, DuplexSpongeInterface, ProverMessage, ProverState, VerificationResult,
         VerifierMessage, VerifierState,
     },
+    type_map::{self, TypeMap},
     type_info::Typed,
     utils::{chunks_exact_or_empty, zip_strict},
     verify,
@@ -90,7 +92,7 @@ pub struct Config<M: Embedding> {
     pub deduplicate_in_domain: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[must_use]
 pub struct Witness<F: Field, G = F>
 where
@@ -98,6 +100,9 @@ where
 {
     pub masks: Vec<F>,
     pub matrix: Vec<F>,
+    #[serde(skip)]
+    pub accelerated_matrix: Option<Arc<dyn MatrixRows<F>>>,
+    #[serde(skip, default)]
     pub matrix_witness: matrix_commit::Witness,
     pub out_of_domain: Evaluations<G>,
 }
@@ -108,6 +113,36 @@ pub struct Commitment<G: Field> {
     matrix_commitment: matrix_commit::Commitment,
     out_of_domain: Evaluations<G>,
 }
+
+pub trait MatrixRows<F: Field>: fmt::Debug + Send + Sync {
+    fn len(&self) -> usize;
+    fn read_rows(&self, indices: &[usize]) -> Vec<F>;
+}
+
+pub struct AcceleratedCommit<F: Field> {
+    pub matrix:         Arc<dyn MatrixRows<F>>,
+    pub merkle_witness: Arc<dyn crate::protocols::merkle_tree::AcceleratedWitness>,
+}
+
+pub trait AcceleratedCommitter<F: Field>: fmt::Debug + Send + Sync {
+    fn try_commit(
+        &self,
+        messages: &[&[F]],
+        masks: &[F],
+        codeword_length: usize,
+        matrix_commit: &matrix_commit::Config<F>,
+    ) -> Result<Option<AcceleratedCommit<F>>, String>;
+}
+
+#[derive(Default)]
+pub struct AcceleratedCommitFamily;
+
+impl type_map::Family for AcceleratedCommitFamily {
+    type Dyn<F: 'static> = dyn AcceleratedCommitter<F>;
+}
+
+pub static ACCELERATED_COMMITTERS: LazyLock<TypeMap<AcceleratedCommitFamily>> =
+    LazyLock::new(TypeMap::new);
 
 /// Interleaved Reed-Solomon code.
 ///
@@ -326,10 +361,41 @@ impl<M: Embedding> Config<M> {
             .iter()
             .flat_map(|v| chunks_exact_or_empty(v, self.message_length(), self.interleaving_depth))
             .collect::<Vec<_>>();
-        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
-
-        // Commit to the matrix
-        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+        let (matrix, accelerated_matrix, matrix_witness) =
+            match ACCELERATED_COMMITTERS.get::<M::Source>() {
+                Some(committer) => match committer.try_commit(
+                    &messages,
+                    &masks,
+                    self.codeword_length,
+                    &self.matrix_commit,
+                ) {
+                    Ok(Some(accelerated)) => {
+                        prover_state.prover_message(&accelerated.merkle_witness.root());
+                        (
+                            Vec::new(),
+                            Some(accelerated.matrix),
+                            matrix_commit::Witness::Accelerated(accelerated.merkle_witness),
+                        )
+                    }
+                    Ok(None) => {
+                        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
+                        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+                        (matrix, None, matrix_witness)
+                    }
+                    Err(err) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(error = %err, "accelerated IRS commit failed, falling back to CPU");
+                        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
+                        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+                        (matrix, None, matrix_witness)
+                    }
+                },
+                None => {
+                    let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
+                    let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+                    (matrix, None, matrix_witness)
+                }
+            };
 
         // Handle out-of-domain points and values
         let oods_points: Vec<M::Target> =
@@ -346,6 +412,7 @@ impl<M: Embedding> Config<M> {
         Witness {
             masks,
             matrix,
+            accelerated_matrix,
             matrix_witness,
             out_of_domain: Evaluations {
                 points: oods_points,
@@ -399,7 +466,10 @@ impl<M: Embedding> Config<M> {
         Hash: ProverMessage<[H::U]>,
     {
         for witness in witnesses {
-            assert_eq!(witness.matrix.len(), self.size());
+            assert!(
+                witness.matrix.len() == self.size() || witness.accelerated_matrix.is_some(),
+                "witness must provide either host matrix data or accelerated rows",
+            );
             assert_eq!(witness.out_of_domain.points.len(), self.out_domain_samples);
             assert_eq!(
                 witness.out_of_domain.matrix.len(),
@@ -418,11 +488,20 @@ impl<M: Embedding> Config<M> {
         let mut matrix_col_offset = 0;
         for witness in witnesses {
             submatrix.clear();
-            for (point_index, &code_index) in indices.iter().enumerate() {
-                let row = &witness.matrix
-                    [code_index * self.num_cols()..(code_index + 1) * self.num_cols()];
+            let rows = if let Some(accelerated_matrix) = &witness.accelerated_matrix {
+                accelerated_matrix.read_rows(&indices)
+            } else {
+                let mut rows = Vec::with_capacity(indices.len() * self.num_cols());
+                for &code_index in &indices {
+                    rows.extend_from_slice(
+                        &witness.matrix
+                            [code_index * self.num_cols()..(code_index + 1) * self.num_cols()],
+                    );
+                }
+                rows
+            };
+            for (point_index, row) in rows.chunks_exact(self.num_cols()).enumerate() {
                 submatrix.extend_from_slice(row);
-
                 let matrix_row = &mut matrix[point_index * stride..(point_index + 1) * stride];
                 matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
                     .copy_from_slice(row);

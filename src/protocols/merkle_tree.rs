@@ -3,7 +3,7 @@
 //! See <https://eprint.iacr.org/2026/089> for analysis when used with truncated permutation
 //! node hashes.
 
-use std::{fmt, mem::swap};
+use std::{fmt, mem::swap, sync::Arc};
 
 use ark_std::rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -54,11 +54,20 @@ pub struct Commitment {
     hash: Hash,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
+pub trait AcceleratedWitness: fmt::Debug + Send + Sync {
+    fn num_nodes(&self) -> usize;
+    fn root(&self) -> Hash;
+    fn read_nodes(&self, indices: &[usize]) -> Vec<Hash>;
+}
+
+#[derive(Clone)]
 #[must_use]
-pub struct Witness {
-    /// The nodes in the Merkle tree, starting with the leaf hash layer.
-    nodes: Vec<Hash>,
+pub enum Witness {
+    Cpu {
+        /// The nodes in the Merkle tree, starting with the leaf hash layer.
+        nodes: Vec<Hash>,
+    },
+    Accelerated(Arc<dyn AcceleratedWitness>),
 }
 
 impl Config {
@@ -123,7 +132,7 @@ impl Config {
         // Commit to the root hash.
         prover_state.prover_message(&previous[0]);
 
-        Witness { nodes }
+        Witness::Cpu { nodes }
     }
 
     pub fn receive_commitment<H>(
@@ -152,36 +161,70 @@ impl Config {
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
     {
-        assert_eq!(witness.nodes.len(), self.num_nodes());
         assert!(indices.iter().all(|&i| i < self.num_leaves));
+        match witness {
+            Witness::Cpu { nodes } => {
+                assert_eq!(nodes.len(), self.num_nodes());
 
-        // Abstract execution of verify algorithm writing required hashes.
-        let mut indices = indices.to_vec();
-        indices.sort_unstable();
-        indices.dedup();
-        let (mut layer, mut remaining) = witness.nodes.split_at(1 << self.layers.len());
-        while layer.len() > 1 {
-            let mut next_indices = Vec::with_capacity(indices.len());
-            let mut iter = indices.iter().copied().peekable();
-            loop {
-                match (iter.next(), iter.peek()) {
-                    (Some(a), Some(&b)) if b == a ^ 1 => {
-                        // Neighboring indices, merging branches.
-                        next_indices.push(a >> 1);
-                        iter.next(); // Skip the next index.
+                let mut indices = indices.to_vec();
+                indices.sort_unstable();
+                indices.dedup();
+                let (mut layer, mut remaining) = nodes.split_at(1 << self.layers.len());
+                while layer.len() > 1 {
+                    let mut next_indices = Vec::with_capacity(indices.len());
+                    let mut iter = indices.iter().copied().peekable();
+                    loop {
+                        match (iter.next(), iter.peek()) {
+                            (Some(a), Some(&b)) if b == a ^ 1 => {
+                                next_indices.push(a >> 1);
+                                iter.next();
+                            }
+                            (Some(a), _) => {
+                                prover_state.prover_hint(&layer[a ^ 1]);
+                                next_indices.push(a >> 1);
+                            }
+                            (None, _) => break,
+                        }
                     }
-                    (Some(a), _) => {
-                        // Single index, pushing the neighbor hash.
-                        prover_state.prover_hint(&layer[a ^ 1]);
-                        next_indices.push(a >> 1);
-                    }
-                    (None, _) => break,
+                    indices = next_indices;
+                    let (next_layer, next_remaining) = remaining.split_at(layer.len() / 2);
+                    layer = next_layer;
+                    remaining = next_remaining;
                 }
             }
-            indices = next_indices;
-            let (next_layer, next_remaining) = remaining.split_at(layer.len() / 2);
-            layer = next_layer;
-            remaining = next_remaining;
+            Witness::Accelerated(witness) => {
+                assert_eq!(witness.num_nodes(), self.num_nodes());
+
+                let mut indices = indices.to_vec();
+                indices.sort_unstable();
+                indices.dedup();
+                let mut layer_offset = 0usize;
+                let mut layer_len = 1usize << self.layers.len();
+                while layer_len > 1 {
+                    let mut next_indices = Vec::with_capacity(indices.len());
+                    let mut sibling_indices = Vec::new();
+                    let mut iter = indices.iter().copied().peekable();
+                    loop {
+                        match (iter.next(), iter.peek()) {
+                            (Some(a), Some(&b)) if b == a ^ 1 => {
+                                next_indices.push(a >> 1);
+                                iter.next();
+                            }
+                            (Some(a), _) => {
+                                sibling_indices.push(layer_offset + (a ^ 1));
+                                next_indices.push(a >> 1);
+                            }
+                            (None, _) => break,
+                        }
+                    }
+                    for hash in witness.read_nodes(&sibling_indices) {
+                        prover_state.prover_hint(&hash);
+                    }
+                    indices = next_indices;
+                    layer_offset += layer_len;
+                    layer_len /= 2;
+                }
+            }
         }
     }
 
@@ -273,8 +316,29 @@ impl Config {
 }
 
 impl Witness {
-    pub const fn num_nodes(&self) -> usize {
-        self.nodes.len()
+    pub fn num_nodes(&self) -> usize {
+        match self {
+            Self::Cpu { nodes } => nodes.len(),
+            Self::Accelerated(witness) => witness.num_nodes(),
+        }
+    }
+}
+
+impl Default for Witness {
+    fn default() -> Self {
+        Self::Cpu { nodes: Vec::new() }
+    }
+}
+
+impl fmt::Debug for Witness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cpu { nodes } => f.debug_struct("Witness").field("nodes", nodes).finish(),
+            Self::Accelerated(witness) => f
+                .debug_struct("Witness")
+                .field("accelerated", witness)
+                .finish(),
+        }
     }
 }
 
