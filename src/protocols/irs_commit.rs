@@ -361,41 +361,34 @@ impl<M: Embedding> Config<M> {
             .iter()
             .flat_map(|v| chunks_exact_or_empty(v, self.message_length(), self.interleaving_depth))
             .collect::<Vec<_>>();
-        let (matrix, accelerated_matrix, matrix_witness) =
-            match ACCELERATED_COMMITTERS.get::<M::Source>() {
-                Some(committer) => match committer.try_commit(
-                    &messages,
-                    &masks,
-                    self.codeword_length,
-                    &self.matrix_commit,
-                ) {
-                    Ok(Some(accelerated)) => {
-                        prover_state.prover_message(&accelerated.merkle_witness.root());
-                        (
-                            Vec::new(),
-                            Some(accelerated.matrix),
-                            matrix_commit::Witness::Accelerated(accelerated.merkle_witness),
-                        )
-                    }
-                    Ok(None) => {
-                        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
-                        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
-                        (matrix, None, matrix_witness)
-                    }
-                    Err(err) => {
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(error = %err, "accelerated IRS commit failed, falling back to CPU");
-                        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
-                        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
-                        (matrix, None, matrix_witness)
-                    }
-                },
-                None => {
-                    let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
-                    let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
-                    (matrix, None, matrix_witness)
+        let accelerated = match ACCELERATED_COMMITTERS.get::<M::Source>() {
+            Some(committer) => match committer.try_commit(
+                &messages,
+                &masks,
+                self.codeword_length,
+                &self.matrix_commit,
+            ) {
+                Ok(accelerated) => accelerated,
+                Err(_err) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::warn!(error = %_err, "accelerated IRS commit failed, falling back to CPU");
+                    None
                 }
-            };
+            },
+            None => None,
+        };
+        let (matrix, accelerated_matrix, matrix_witness) = if let Some(accelerated) = accelerated {
+            prover_state.prover_message(&accelerated.merkle_witness.root());
+            (
+                Vec::new(),
+                Some(accelerated.matrix),
+                matrix_commit::Witness::Accelerated(accelerated.merkle_witness),
+            )
+        } else {
+            let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
+            let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+            (matrix, None, matrix_witness)
+        };
 
         // Handle out-of-domain points and values
         let oods_points: Vec<M::Target> =
@@ -466,10 +459,7 @@ impl<M: Embedding> Config<M> {
         Hash: ProverMessage<[H::U]>,
     {
         for witness in witnesses {
-            assert!(
-                witness.matrix.len() == self.size() || witness.accelerated_matrix.is_some(),
-                "witness must provide either host matrix data or accelerated rows",
-            );
+            assert_eq!(witness.matrix_len(), self.size());
             assert_eq!(witness.out_of_domain.points.len(), self.out_domain_samples);
             assert_eq!(
                 witness.out_of_domain.matrix.len(),
@@ -484,27 +474,17 @@ impl<M: Embedding> Config<M> {
         // and collect them in the evaluation matrix.
         let stride = witnesses.len() * self.num_cols();
         let mut matrix = vec![M::Source::ZERO; indices.len() * stride];
-        let mut submatrix = Vec::with_capacity(indices.len() * self.num_cols());
         let mut matrix_col_offset = 0;
         for witness in witnesses {
-            submatrix.clear();
-            let rows = if let Some(accelerated_matrix) = &witness.accelerated_matrix {
-                accelerated_matrix.read_rows(&indices)
-            } else {
-                let mut rows = Vec::with_capacity(indices.len() * self.num_cols());
-                for &code_index in &indices {
-                    rows.extend_from_slice(
-                        &witness.matrix
-                            [code_index * self.num_cols()..(code_index + 1) * self.num_cols()],
-                    );
+            let submatrix = witness.read_rows(self.num_cols(), &indices);
+            if stride != 0 && self.num_cols() != 0 {
+                for (matrix_row, row) in zip_strict(
+                    matrix.chunks_exact_mut(stride),
+                    submatrix.chunks_exact(self.num_cols()),
+                ) {
+                    matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
+                        .copy_from_slice(row);
                 }
-                rows
-            };
-            for (point_index, row) in rows.chunks_exact(self.num_cols()).enumerate() {
-                submatrix.extend_from_slice(row);
-                let matrix_row = &mut matrix[point_index * stride..(point_index + 1) * stride];
-                matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
-                    .copy_from_slice(row);
             }
             prover_state.prover_hint_ark(&submatrix);
             self.matrix_commit
@@ -596,6 +576,24 @@ impl<G: Field> Commitment<G> {
 }
 
 impl<F: Field, G: Field> Witness<F, G> {
+    fn matrix_len(&self) -> usize {
+        self.accelerated_matrix
+            .as_ref()
+            .map_or(self.matrix.len(), |matrix| matrix.len())
+    }
+
+    fn read_rows(&self, row_width: usize, indices: &[usize]) -> Vec<F> {
+        if let Some(matrix) = &self.accelerated_matrix {
+            return matrix.read_rows(indices);
+        }
+
+        let mut rows = Vec::with_capacity(indices.len() * row_width);
+        for &code_index in indices {
+            rows.extend_from_slice(&self.matrix[code_index * row_width..(code_index + 1) * row_width]);
+        }
+        rows
+    }
+
     /// Returns the out-of-domain evaluations.
     pub const fn out_of_domain(&self) -> &Evaluations<G> {
         &self.out_of_domain

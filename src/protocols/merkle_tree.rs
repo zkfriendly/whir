@@ -162,69 +162,36 @@ impl Config {
         Hash: ProverMessage<[H::U]>,
     {
         assert!(indices.iter().all(|&i| i < self.num_leaves));
-        match witness {
-            Witness::Cpu { nodes } => {
-                assert_eq!(nodes.len(), self.num_nodes());
+        assert_eq!(witness.num_nodes(), self.num_nodes());
 
-                let mut indices = indices.to_vec();
-                indices.sort_unstable();
-                indices.dedup();
-                let (mut layer, mut remaining) = nodes.split_at(1 << self.layers.len());
-                while layer.len() > 1 {
-                    let mut next_indices = Vec::with_capacity(indices.len());
-                    let mut iter = indices.iter().copied().peekable();
-                    loop {
-                        match (iter.next(), iter.peek()) {
-                            (Some(a), Some(&b)) if b == a ^ 1 => {
-                                next_indices.push(a >> 1);
-                                iter.next();
-                            }
-                            (Some(a), _) => {
-                                prover_state.prover_hint(&layer[a ^ 1]);
-                                next_indices.push(a >> 1);
-                            }
-                            (None, _) => break,
-                        }
+        let mut indices = indices.to_vec();
+        indices.sort_unstable();
+        indices.dedup();
+        let mut layer_offset = 0usize;
+        let mut layer_len = 1usize << self.layers.len();
+        while layer_len > 1 {
+            let mut next_indices = Vec::with_capacity(indices.len());
+            let mut sibling_indices = Vec::new();
+            let mut iter = indices.iter().copied().peekable();
+            loop {
+                match (iter.next(), iter.peek()) {
+                    (Some(a), Some(&b)) if b == a ^ 1 => {
+                        next_indices.push(a >> 1);
+                        iter.next();
                     }
-                    indices = next_indices;
-                    let (next_layer, next_remaining) = remaining.split_at(layer.len() / 2);
-                    layer = next_layer;
-                    remaining = next_remaining;
+                    (Some(a), _) => {
+                        sibling_indices.push(layer_offset + (a ^ 1));
+                        next_indices.push(a >> 1);
+                    }
+                    (None, _) => break,
                 }
             }
-            Witness::Accelerated(witness) => {
-                assert_eq!(witness.num_nodes(), self.num_nodes());
-
-                let mut indices = indices.to_vec();
-                indices.sort_unstable();
-                indices.dedup();
-                let mut layer_offset = 0usize;
-                let mut layer_len = 1usize << self.layers.len();
-                while layer_len > 1 {
-                    let mut next_indices = Vec::with_capacity(indices.len());
-                    let mut sibling_indices = Vec::new();
-                    let mut iter = indices.iter().copied().peekable();
-                    loop {
-                        match (iter.next(), iter.peek()) {
-                            (Some(a), Some(&b)) if b == a ^ 1 => {
-                                next_indices.push(a >> 1);
-                                iter.next();
-                            }
-                            (Some(a), _) => {
-                                sibling_indices.push(layer_offset + (a ^ 1));
-                                next_indices.push(a >> 1);
-                            }
-                            (None, _) => break,
-                        }
-                    }
-                    for hash in witness.read_nodes(&sibling_indices) {
-                        prover_state.prover_hint(&hash);
-                    }
-                    indices = next_indices;
-                    layer_offset += layer_len;
-                    layer_len /= 2;
-                }
+            for hash in witness.read_nodes(&sibling_indices) {
+                prover_state.prover_hint(&hash);
             }
+            indices = next_indices;
+            layer_offset += layer_len;
+            layer_len /= 2;
         }
     }
 
@@ -320,6 +287,20 @@ impl Witness {
         match self {
             Self::Cpu { nodes } => nodes.len(),
             Self::Accelerated(witness) => witness.num_nodes(),
+        }
+    }
+
+    pub fn root(&self) -> Hash {
+        match self {
+            Self::Cpu { nodes } => nodes.last().copied().unwrap_or_default(),
+            Self::Accelerated(witness) => witness.root(),
+        }
+    }
+
+    fn read_nodes(&self, indices: &[usize]) -> Vec<Hash> {
+        match self {
+            Self::Cpu { nodes } => indices.iter().map(|&index| nodes[index]).collect(),
+            Self::Accelerated(witness) => witness.read_nodes(indices),
         }
     }
 }
