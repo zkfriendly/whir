@@ -206,6 +206,21 @@ impl<T: TypeInfo + Encodable + Send + Sync> Config<T> {
         self.num_rows() * self.num_cols
     }
 
+    pub fn build_witness(&self, matrix: &[T]) -> Witness {
+        assert_eq!(matrix.len(), self.num_rows() * self.num_cols);
+
+        let engine = hash::ENGINES
+            .retrieve(self.leaf_hash_id)
+            .expect("Failed to retrieve hash engine");
+
+        // Compute leaf hashes
+        let mut leaves = Vec::with_capacity(self.merkle_tree.num_nodes());
+        leaves.resize(self.merkle_tree.num_leaves, Hash::default());
+        hash_rows(&*engine, matrix, &mut leaves[..self.num_rows()]);
+
+        self.merkle_tree.build_witness(leaves)
+    }
+
     /// Commit the matrix (in row-major order).
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(self = %self, size = matrix.len(), engine)))]
     pub fn commit<H, R>(&self, prover_state: &mut ProverState<H, R>, matrix: &[T]) -> Witness
@@ -214,21 +229,9 @@ impl<T: TypeInfo + Encodable + Send + Sync> Config<T> {
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
     {
-        assert_eq!(matrix.len(), self.num_rows() * self.num_cols);
-
-        let engine = hash::ENGINES
-            .retrieve(self.leaf_hash_id)
-            .expect("Failed to retrieve hash engine");
-        #[cfg(feature = "tracing")]
-        tracing::Span::current().record("engine", engine.name().as_ref());
-
-        // Compute leaf hashes
-        let mut leaves = Vec::with_capacity(self.merkle_tree.num_nodes());
-        leaves.resize(self.merkle_tree.num_leaves, Hash::default());
-        hash_rows(&*engine, matrix, &mut leaves[..self.num_rows()]);
-
-        // Commit the leaf hashes
-        self.merkle_tree.commit(prover_state, leaves)
+        let witness = self.build_witness(matrix);
+        prover_state.prover_message(&merkle_tree::WitnessTrait::root(&witness));
+        witness
     }
 
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(self = %self)))]
@@ -257,7 +260,7 @@ impl<T: TypeInfo + Encodable + Send + Sync> Config<T> {
         H: DuplexSpongeInterface,
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
-        W: merkle_tree::WitnessTrait,
+        W: merkle_tree::WitnessTrait + ?Sized,
     {
         self.merkle_tree.open(prover_state, witness, indices);
     }

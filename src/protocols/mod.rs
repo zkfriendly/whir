@@ -12,6 +12,7 @@ pub mod basecase;
 pub mod challenge_indices;
 pub mod geometric_challenge;
 pub mod irs_commit;
+mod irs_commit_backend;
 pub mod matrix_commit;
 pub mod merkle_tree;
 pub mod proof_of_work;

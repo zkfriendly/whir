@@ -1,5 +1,8 @@
 use divan::{black_box, AllocProfiler, Bencher};
-use whir::algebra::{fields::Field64, ntt, random_vector};
+use whir::{
+    algebra::{fields::Field64, random_vector},
+    protocols::irs_commit::irs_committer,
+};
 
 #[global_allocator]
 static ALLOC: AllocProfiler = AllocProfiler::system();
@@ -35,7 +38,7 @@ fn interleaved_rs_encode(bencher: Bencher, case: &(usize, usize, usize)) {
         })
         .bench_values(|(coeffs, expansion, _coset_sz)| {
             let coeffs_refs = coeffs.iter().map(|v| v.as_slice()).collect::<Vec<_>>();
-            black_box(ntt::interleaved_rs_encode(
+            black_box(irs_committer::<Field64>().interleaved_encode(
                 &coeffs_refs,
                 &[],
                 coeffs[0].len() * expansion,

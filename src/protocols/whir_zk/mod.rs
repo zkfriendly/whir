@@ -178,7 +178,7 @@ impl<F: Field> Config<F> {
     pub(crate) fn omega_full(&self) -> F {
         let codeword_length = self.blinded_commitment.initial_committer.codeword_length;
         let full_domain_size = codeword_length * self.interleaving_depth();
-        crate::algebra::ntt::generator(full_domain_size)
+        irs_commit::irs_committer::<F>().generator(full_domain_size)
     }
 
     /// Sub-domain generator (ω_sub = ω^interleaving_depth).
@@ -186,7 +186,7 @@ impl<F: Field> Config<F> {
     fn omega_sub(&self) -> F {
         // Assume it has a generator, and the evaluation order is 1, g, g^2, ...
         let codeword_length = self.blinded_commitment.initial_committer.codeword_length;
-        crate::algebra::ntt::generator(codeword_length)
+        irs_commit::irs_committer::<F>().generator(codeword_length)
     }
 
     /// ζ = ω^num_rows — the interleaving_depth-th root of unity.

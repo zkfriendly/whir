@@ -101,13 +101,7 @@ impl Config {
         (1 << (self.layers.len() + 1)) - 1
     }
 
-    #[cfg_attr(feature = "tracing", instrument(skip(prover_state, leaves), fields(self = %self)))]
-    pub fn commit<H, R>(&self, prover_state: &mut ProverState<H, R>, leaves: Vec<Hash>) -> Witness
-    where
-        H: DuplexSpongeInterface,
-        R: RngCore + CryptoRng,
-        Hash: ProverMessage<[H::U]>,
-    {
+    pub fn build_witness(&self, leaves: Vec<Hash>) -> Witness {
         assert_eq!(
             leaves.len(),
             self.num_leaves,
@@ -143,10 +137,19 @@ impl Config {
             remaining = next_remaining;
         }
 
-        // Commit to the root hash.
-        prover_state.prover_message(&previous[0]);
-
         Witness { nodes }
+    }
+
+    #[cfg_attr(feature = "tracing", instrument(skip(prover_state, leaves), fields(self = %self)))]
+    pub fn commit<H, R>(&self, prover_state: &mut ProverState<H, R>, leaves: Vec<Hash>) -> Witness
+    where
+        H: DuplexSpongeInterface,
+        R: RngCore + CryptoRng,
+        Hash: ProverMessage<[H::U]>,
+    {
+        let witness = self.build_witness(leaves);
+        prover_state.prover_message(&witness.root());
+        witness
     }
 
     pub fn receive_commitment<H>(
@@ -165,15 +168,16 @@ impl Config {
     ///
     /// Indices can be in any order and may contain duplicates.
     #[cfg_attr(feature = "tracing", instrument(skip_all, fields(num_indices = indices.len())))]
-    pub fn open<H, R>(
+    pub fn open<H, R, W>(
         &self,
         prover_state: &mut ProverState<H, R>,
-        witness: &impl WitnessTrait,
+        witness: &W,
         indices: &[usize],
     ) where
         H: DuplexSpongeInterface,
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
+        W: WitnessTrait + ?Sized,
     {
         assert_eq!(witness.num_nodes(), self.num_nodes());
         assert!(indices.iter().all(|&i| i < self.num_leaves));

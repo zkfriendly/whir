@@ -21,6 +21,7 @@ use std::{
     f64::{self, consts::LOG2_10},
     fmt,
     ops::Neg,
+    sync::Arc,
 };
 
 use ark_ff::{AdditiveGroup, Field};
@@ -30,14 +31,18 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "tracing")]
 use tracing::instrument;
 
+pub use super::irs_commit_backend::{
+    irs_committer, CpuIrsCommitter, HostMatrixRows, IrsCommitArtifact, IrsCommitter,
+    IrsCommitterFamily, MatrixRows, IRS_COMMITTERS,
+};
 use crate::{
     algebra::{
         dot, embedding::Embedding, fields::FieldWithSize, lift, linear_form::UnivariateEvaluation,
-        mixed_univariate_evaluate, ntt, random_vector,
+        mixed_univariate_evaluate, random_vector,
     },
     engines::EngineId,
     hash::Hash,
-    protocols::{challenge_indices::challenge_indices, matrix_commit},
+    protocols::{challenge_indices::challenge_indices, matrix_commit, merkle_tree},
     transcript::{
         Codec, Decoding, DuplexSpongeInterface, ProverMessage, ProverState, VerificationResult,
         VerifierMessage, VerifierState,
@@ -90,16 +95,37 @@ pub struct Config<M: Embedding> {
     pub deduplicate_in_domain: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
 #[must_use]
 pub struct Witness<F: Field, G = F>
 where
     G: Field,
 {
     pub masks: Vec<F>,
-    pub matrix: Vec<F>,
-    pub matrix_witness: matrix_commit::Witness,
+    pub rows: Arc<dyn MatrixRows<F>>,
+    pub matrix_witness: Arc<dyn merkle_tree::WitnessTrait>,
     pub out_of_domain: Evaluations<G>,
+}
+
+impl<F: Field, G: Field> Clone for Witness<F, G> {
+    fn clone(&self) -> Self {
+        Self {
+            masks: self.masks.clone(),
+            rows: Arc::clone(&self.rows),
+            matrix_witness: Arc::clone(&self.matrix_witness),
+            out_of_domain: self.out_of_domain.clone(),
+        }
+    }
+}
+
+impl<F: Field, G: Field> fmt::Debug for Witness<F, G> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Witness")
+            .field("masks", &self.masks)
+            .field("num_rows", &self.num_rows())
+            .field("num_cols", &self.num_cols())
+            .field("out_of_domain", &self.out_of_domain)
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
@@ -230,7 +256,7 @@ impl<M: Embedding> Config<M> {
     }
 
     pub fn evaluation_points(&self, indices: &[usize]) -> Vec<M::Source> {
-        ntt::evaluation_points::<M::Source>(
+        irs_committer::<M::Source>().evaluation_points(
             self.masked_message_length(),
             self.codeword_length,
             indices,
@@ -303,6 +329,7 @@ impl<M: Embedding> Config<M> {
         vectors: &[&[M::Source]],
     ) -> Witness<M::Source, M::Target>
     where
+        M::Source: 'static,
         Standard: Distribution<M::Source>,
         H: DuplexSpongeInterface,
         R: RngCore + CryptoRng,
@@ -326,10 +353,20 @@ impl<M: Embedding> Config<M> {
             .iter()
             .flat_map(|v| chunks_exact_or_empty(v, self.message_length(), self.interleaving_depth))
             .collect::<Vec<_>>();
-        let matrix = ntt::interleaved_rs_encode(&messages, &masks, self.codeword_length);
-
-        // Commit to the matrix
-        let matrix_witness = self.matrix_commit.commit(prover_state, &matrix);
+        let committed = irs_committer::<M::Source>().commit(
+            &messages,
+            &masks,
+            self.codeword_length,
+            &self.matrix_commit,
+        );
+        assert_eq!(committed.rows.num_rows(), self.codeword_length);
+        assert_eq!(committed.rows.num_cols(), self.num_cols());
+        assert_eq!(
+            committed.matrix_witness.num_nodes(),
+            self.matrix_commit.merkle_tree.num_nodes()
+        );
+        assert_eq!(committed.root, committed.matrix_witness.root());
+        prover_state.prover_message(&committed.root);
 
         // Handle out-of-domain points and values
         let oods_points: Vec<M::Target> =
@@ -345,8 +382,8 @@ impl<M: Embedding> Config<M> {
 
         Witness {
             masks,
-            matrix,
-            matrix_witness,
+            rows: committed.rows,
+            matrix_witness: committed.matrix_witness,
             out_of_domain: Evaluations {
                 points: oods_points,
                 matrix: oods_matrix,
@@ -399,7 +436,8 @@ impl<M: Embedding> Config<M> {
         Hash: ProverMessage<[H::U]>,
     {
         for witness in witnesses {
-            assert_eq!(witness.matrix.len(), self.size());
+            assert_eq!(witness.num_rows(), self.codeword_length);
+            assert_eq!(witness.num_cols(), self.num_cols());
             assert_eq!(witness.out_of_domain.points.len(), self.out_domain_samples);
             assert_eq!(
                 witness.out_of_domain.matrix.len(),
@@ -414,22 +452,19 @@ impl<M: Embedding> Config<M> {
         // and collect them in the evaluation matrix.
         let stride = witnesses.len() * self.num_cols();
         let mut matrix = vec![M::Source::ZERO; indices.len() * stride];
-        let mut submatrix = Vec::with_capacity(indices.len() * self.num_cols());
         let mut matrix_col_offset = 0;
         for witness in witnesses {
-            submatrix.clear();
-            for (point_index, &code_index) in indices.iter().enumerate() {
-                let row = &witness.matrix
-                    [code_index * self.num_cols()..(code_index + 1) * self.num_cols()];
-                submatrix.extend_from_slice(row);
-
-                let matrix_row = &mut matrix[point_index * stride..(point_index + 1) * stride];
-                matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
-                    .copy_from_slice(row);
+            let submatrix = witness.read_rows(&indices);
+            if self.num_cols() != 0 {
+                for (point_index, row) in submatrix.chunks_exact(self.num_cols()).enumerate() {
+                    let matrix_row = &mut matrix[point_index * stride..(point_index + 1) * stride];
+                    matrix_row[matrix_col_offset..matrix_col_offset + self.num_cols()]
+                        .copy_from_slice(row);
+                }
             }
             prover_state.prover_hint_ark(&submatrix);
             self.matrix_commit
-                .open(prover_state, &witness.matrix_witness, &indices);
+                .open(prover_state, witness.matrix_witness.as_ref(), &indices);
             matrix_col_offset += self.num_cols();
         }
 
@@ -525,6 +560,23 @@ impl<F: Field, G: Field> Witness<F, G> {
     pub fn num_vectors(&self) -> usize {
         self.out_of_domain().num_columns()
     }
+
+    pub fn num_rows(&self) -> usize {
+        self.rows.num_rows()
+    }
+
+    pub fn num_cols(&self) -> usize {
+        self.rows.num_cols()
+    }
+
+    pub fn read_rows(&self, indices: &[usize]) -> Vec<F> {
+        self.rows.read_rows(indices)
+    }
+
+    pub fn matrix(&self) -> Vec<F> {
+        let indices = (0..self.num_rows()).collect::<Vec<_>>();
+        self.read_rows(&indices)
+    }
 }
 
 impl<F: Field> Evaluations<F> {
@@ -612,7 +664,10 @@ pub(crate) fn num_in_domain_queries(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::iter;
+    use std::{
+        iter,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use ark_std::rand::{
         distributions::Standard, prelude::Distribution, rngs::StdRng, SeedableRng,
@@ -623,12 +678,61 @@ pub(crate) mod tests {
     use crate::{
         algebra::{
             embedding::{Basefield, Compose, Frobenius, Identity},
-            fields,
-            ntt::NTT,
-            random_vector, univariate_evaluate,
+            fields, random_vector, univariate_evaluate,
         },
         transcript::{codecs::U64, DomainSeparator},
     };
+
+    static REGISTERED_COMMITTER_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct CountingCommitter {
+        inner: Arc<dyn IrsCommitter<fields::Field192>>,
+    }
+
+    impl crate::algebra::ntt::ReedSolomon<fields::Field192> for CountingCommitter {
+        fn next_order(&self, size: usize) -> Option<usize> {
+            self.inner.next_order(size)
+        }
+
+        fn generator(&self, codeword_length: usize) -> fields::Field192 {
+            self.inner.generator(codeword_length)
+        }
+
+        fn evaluation_points(
+            &self,
+            masked_message_length: usize,
+            codeword_length: usize,
+            indices: &[usize],
+        ) -> Vec<fields::Field192> {
+            self.inner
+                .evaluation_points(masked_message_length, codeword_length, indices)
+        }
+
+        fn interleaved_encode(
+            &self,
+            messages: &[&[fields::Field192]],
+            masks: &[fields::Field192],
+            codeword_length: usize,
+        ) -> Vec<fields::Field192> {
+            self.inner
+                .interleaved_encode(messages, masks, codeword_length)
+        }
+    }
+
+    impl IrsCommitter<fields::Field192> for CountingCommitter {
+        fn commit(
+            &self,
+            messages: &[&[fields::Field192]],
+            masks: &[fields::Field192],
+            codeword_length: usize,
+            matrix_commit: &matrix_commit::Config<fields::Field192>,
+        ) -> IrsCommitArtifact<fields::Field192> {
+            REGISTERED_COMMITTER_CALLS.fetch_add(1, Ordering::SeqCst);
+            self.inner
+                .commit(messages, masks, codeword_length, matrix_commit)
+        }
+    }
 
     impl<M: Embedding> Config<M> {
         pub fn arbitrary(
@@ -643,7 +747,7 @@ pub(crate) mod tests {
             let message_length = vector_size / interleaving_depth + mask_length;
 
             // Compute supported NTT domains for F
-            let engine = NTT.get::<M::Source>().expect("Unsupported field");
+            let engine = irs_committer::<M::Source>();
             let valid_codeword_lengths =
                 iter::successors(engine.next_order(message_length), |size| {
                     engine.next_order(*size + 1)
@@ -792,8 +896,9 @@ pub(crate) mod tests {
         M::Target: Codec,
         Standard: Distribution<M::Source> + Distribution<M::Target>,
     {
+        let engine = irs_committer::<M::Source>();
         let valid_sizes = (1..=1024)
-            .filter(|&n| ntt::next_order::<M::Source>(n) == Some(n))
+            .filter(|&n| engine.next_order(n) == Some(n))
             .collect::<Vec<_>>();
         let size = select(valid_sizes);
 
@@ -819,6 +924,62 @@ pub(crate) mod tests {
     #[test]
     fn test_field64_1() {
         proptest(&Identity::<fields::Field64>::new());
+    }
+
+    #[test]
+    fn test_registered_irs_committer_is_used() {
+        crate::tests::init();
+        REGISTERED_COMMITTER_CALLS.store(0, Ordering::SeqCst);
+
+        let previous = IRS_COMMITTERS.remove::<fields::Field192>();
+        let inner = previous
+            .clone()
+            .unwrap_or_else(|| panic!("missing default IRS committer for Field192"));
+        IRS_COMMITTERS.insert(Arc::new(CountingCommitter { inner }));
+
+        let config = Config {
+            embedding: Typed::new(Identity::<fields::Field192>::new()),
+            num_vectors: 1,
+            vector_size: 8,
+            mask_length: 0,
+            codeword_length: 8,
+            interleaving_depth: 1,
+            matrix_commit: matrix_commit::Config::with_hash(crate::hash::BLAKE3, 8, 1),
+            johnson_slack: OrderedFloat::default(),
+            in_domain_samples: 1,
+            out_domain_samples: 0,
+            deduplicate_in_domain: false,
+        };
+
+        let ds = DomainSeparator::protocol(&config)
+            .session(&format!("Test at {}:{}", file!(), line!()))
+            .instance(&U64(7));
+
+        let mut rng = StdRng::seed_from_u64(7);
+        let vector = random_vector(&mut rng, config.vector_size);
+        let vectors = vec![vector];
+
+        let mut prover_state = ProverState::new_std(&ds);
+        let witness = config.commit(
+            &mut prover_state,
+            &vectors.iter().map(|v| v.as_slice()).collect::<Vec<_>>(),
+        );
+        assert_eq!(REGISTERED_COMMITTER_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(witness.matrix().len(), config.size());
+
+        let in_domain_evals = config.open(&mut prover_state, &[&witness]);
+        let proof = prover_state.proof();
+
+        let mut verifier_state = VerifierState::new_std(&ds, &proof);
+        let commitment = config.receive_commitment(&mut verifier_state).unwrap();
+        let verifier_in_domain_evals = config.verify(&mut verifier_state, &[&commitment]).unwrap();
+        assert_eq!(in_domain_evals, verifier_in_domain_evals);
+        verifier_state.check_eof().unwrap();
+
+        IRS_COMMITTERS.remove::<fields::Field192>();
+        if let Some(previous) = previous {
+            IRS_COMMITTERS.insert(previous);
+        }
     }
 
     #[test]

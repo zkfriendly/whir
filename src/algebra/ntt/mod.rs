@@ -6,12 +6,8 @@ mod transpose;
 mod utils;
 mod wavelet;
 
-use std::{
-    fmt::Debug,
-    sync::{Arc, LazyLock},
-};
+use std::fmt::Debug;
 
-use ark_ff::Field;
 use static_assertions::assert_obj_safe;
 
 use self::matrix::MatrixMut;
@@ -20,46 +16,6 @@ pub use self::{
     transpose::transpose,
     wavelet::{inverse_wavelet_transform, wavelet_transform},
 };
-use crate::{
-    algebra::fields,
-    type_map::{self, TypeMap},
-};
-
-pub static NTT: LazyLock<TypeMap<NttFamily>> = LazyLock::new(|| {
-    let map = TypeMap::new();
-    map.insert(
-        Arc::new(NttEngine::<fields::Field64>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>
-    );
-    map.insert(
-        Arc::new(NttEngine::<fields::Field128>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>
-    );
-    map.insert(
-        Arc::new(NttEngine::<fields::Field192>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>
-    );
-    map.insert(
-        Arc::new(NttEngine::<fields::Field256>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>
-    );
-    map.insert(
-        Arc::new(NttEngine::<fields::Field64_2>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>,
-    );
-    map.insert(
-        Arc::new(NttEngine::<fields::Field64_3>::new_from_fftfield()) as Arc<dyn ReedSolomon<_>>,
-    );
-    map.insert(Arc::new(
-        NttEngine::<<fields::Field64_2 as Field>::BasePrimeField>::new_from_fftfield(),
-    ) as Arc<dyn ReedSolomon<_>>);
-    map.insert(Arc::new(
-        NttEngine::<<fields::Field64_3 as Field>::BasePrimeField>::new_from_fftfield(),
-    ) as Arc<dyn ReedSolomon<_>>);
-    map
-});
-
-#[derive(Default)]
-pub struct NttFamily;
-
-impl type_map::Family for NttFamily {
-    type Dyn<F: 'static> = dyn ReedSolomon<F>;
-}
 
 /// Trait for a Reed-Solomon encoder implementation for a given field `F`.
 pub trait ReedSolomon<F>: Debug + Send + Sync {
@@ -101,42 +57,11 @@ pub trait ReedSolomon<F>: Debug + Send + Sync {
 
 assert_obj_safe!(ReedSolomon<crate::algebra::fields::Field256>);
 
-pub fn next_order<F: 'static>(size: usize) -> Option<usize> {
-    NTT.get::<F>()
-        .expect("Unsupported NTT field.")
-        .next_order(size)
-}
-
-pub fn evaluation_points<F: 'static>(
-    masked_message_length: usize,
-    codeword_length: usize,
-    indices: &[usize],
-) -> Vec<F> {
-    NTT.get::<F>()
-        .expect("Unsupported NTT field.")
-        .evaluation_points(masked_message_length, codeword_length, indices)
-}
-
-pub fn interleaved_rs_encode<F: 'static>(
-    messages: &[&[F]],
-    masks: &[F],
-    codeword_length: usize,
-) -> Vec<F> {
-    NTT.get::<F>()
-        .expect("Unsupported NTT field.")
-        .interleaved_encode(messages, masks, codeword_length)
-}
-
-pub fn generator<F: 'static>(codeword_length: usize) -> F {
-    NTT.get::<F>()
-        .expect("Unsupported NTT field.")
-        .generator(codeword_length)
-}
-
 #[cfg(test)]
 mod tests {
     use std::iter;
 
+    use ark_ff::FftField;
     use ark_std::rand::{
         distributions::Standard, prelude::Distribution, rngs::StdRng, SeedableRng,
     };
@@ -148,14 +73,14 @@ mod tests {
         utils::{chunks_exact_or_empty, zip_strict},
     };
 
-    fn valid_codeword_lengths<F: 'static>(size: usize, count: usize) -> Vec<usize> {
-        let ntt = NTT.get::<F>().expect("No NTT engine for field.");
+    fn valid_codeword_lengths<F: FftField>(size: usize, count: usize) -> Vec<usize> {
+        let ntt = NttEngine::<F>::new_from_fftfield();
         iter::successors(ntt.next_order(size), |size| ntt.next_order(*size + 1))
             .take(count)
             .collect()
     }
 
-    fn test<F: Field>(ntt: &dyn ReedSolomon<F>)
+    fn test<F: FftField>(ntt: &dyn ReedSolomon<F>)
     where
         Standard: Distribution<F>,
     {
@@ -223,6 +148,8 @@ mod tests {
 
     #[test]
     fn test_field64_1() {
-        test::<fields::Field64>(NTT.get().unwrap().as_ref());
+        test::<crate::algebra::fields::Field64>(
+            &NttEngine::<crate::algebra::fields::Field64>::new_from_fftfield(),
+        );
     }
 }
