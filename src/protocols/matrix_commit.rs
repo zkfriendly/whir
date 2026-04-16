@@ -248,15 +248,16 @@ impl<T: TypeInfo + Encodable + Send + Sync> Config<T> {
     /// Indices can be in any order and may contain duplicates. The row values are not provided by
     /// this protocol, it is up to the caller to provide them to the verifier.
     #[cfg_attr(feature = "tracing", instrument(skip(prover_state, witness, indices), fields(self = %self, num_indices = indices.len())))]
-    pub fn open<H, R>(
+    pub fn open<H, R, W>(
         &self,
         prover_state: &mut ProverState<H, R>,
-        witness: &Witness,
+        witness: &W,
         indices: &[usize],
     ) where
         H: DuplexSpongeInterface,
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
+        W: merkle_tree::WitnessTrait,
     {
         self.merkle_tree.open(prover_state, witness, indices);
     }

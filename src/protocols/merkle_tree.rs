@@ -54,11 +54,34 @@ pub struct Commitment {
     hash: Hash,
 }
 
+/// Access to Merkle witness nodes.
+///
+/// Implementations may materialize the full tree in memory or read nodes back
+/// on demand from another device (e.g. GPU).
+pub trait WitnessTrait {
+    fn num_nodes(&self) -> usize;
+    /// Reads the requested nodes in the same order as `indices`.
+    fn read_nodes(&self, indices: &[usize]) -> Vec<Hash>;
+
+    fn root(&self) -> Hash {
+        self.read_nodes(&[self.num_nodes() - 1])[0]
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Default, Serialize, Deserialize)]
 #[must_use]
 pub struct Witness {
     /// The nodes in the Merkle tree, starting with the leaf hash layer.
     nodes: Vec<Hash>,
+}
+
+impl WitnessTrait for Witness {
+    fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+    fn read_nodes(&self, indices: &[usize]) -> Vec<Hash> {
+        indices.iter().map(|&i| self.nodes[i]).collect()
+    }
 }
 
 impl Config {
@@ -145,22 +168,25 @@ impl Config {
     pub fn open<H, R>(
         &self,
         prover_state: &mut ProverState<H, R>,
-        witness: &Witness,
+        witness: &impl WitnessTrait,
         indices: &[usize],
     ) where
         H: DuplexSpongeInterface,
         R: RngCore + CryptoRng,
         Hash: ProverMessage<[H::U]>,
     {
-        assert_eq!(witness.nodes.len(), self.num_nodes());
+        assert_eq!(witness.num_nodes(), self.num_nodes());
         assert!(indices.iter().all(|&i| i < self.num_leaves));
 
         // Abstract execution of verify algorithm writing required hashes.
         let mut indices = indices.to_vec();
         indices.sort_unstable();
         indices.dedup();
-        let (mut layer, mut remaining) = witness.nodes.split_at(1 << self.layers.len());
-        while layer.len() > 1 {
+        let mut layer_offset = 0;
+        let mut layer_len = 1 << self.layers.len();
+        while layer_len > 1 {
+            // used to batch readbacks to avoid tiny reads on each iteration
+            let mut sibling_indices = Vec::with_capacity(indices.len());
             let mut next_indices = Vec::with_capacity(indices.len());
             let mut iter = indices.iter().copied().peekable();
             loop {
@@ -172,16 +198,18 @@ impl Config {
                     }
                     (Some(a), _) => {
                         // Single index, pushing the neighbor hash.
-                        prover_state.prover_hint(&layer[a ^ 1]);
+                        sibling_indices.push(layer_offset + (a ^ 1));
                         next_indices.push(a >> 1);
                     }
                     (None, _) => break,
                 }
             }
+            for hash in witness.read_nodes(&sibling_indices) {
+                prover_state.prover_hint(&hash);
+            }
             indices = next_indices;
-            let (next_layer, next_remaining) = remaining.split_at(layer.len() / 2);
-            layer = next_layer;
-            remaining = next_remaining;
+            layer_offset += layer_len;
+            layer_len /= 2;
         }
     }
 
