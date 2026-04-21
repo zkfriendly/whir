@@ -102,7 +102,7 @@ where
 {
     pub masks: Vec<F>,
     pub rows: Arc<dyn MatrixRows<F>>,
-    pub matrix_witness: Arc<dyn merkle_tree::WitnessTrait>,
+    pub matrix_witness: Arc<dyn merkle_tree::WitnessTrait + Send + Sync>,
     pub out_of_domain: Evaluations<G>,
 }
 

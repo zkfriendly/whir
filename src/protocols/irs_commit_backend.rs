@@ -51,7 +51,7 @@ pub trait IrsCommitter<F: Field>: ReedSolomon<F> + Send + Sync {
 pub struct IrsCommitArtifact<F: Field> {
     pub root: Hash,
     pub rows: Arc<dyn MatrixRows<F>>,
-    pub matrix_witness: Arc<dyn merkle_tree::WitnessTrait>,
+    pub matrix_witness: Arc<dyn merkle_tree::WitnessTrait + Send + Sync>,
 }
 
 #[derive(Clone)]

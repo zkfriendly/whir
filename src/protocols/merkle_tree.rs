@@ -57,8 +57,11 @@ pub struct Commitment {
 /// Access to Merkle witness nodes.
 ///
 /// Implementations may materialize the full tree in memory or read nodes back
-/// on demand from another device (e.g. GPU).
-pub trait WitnessTrait {
+/// on demand from another device (e.g. GPU). The `Send + Sync` bounds are
+/// required so that the `Witness` (which Arc-wraps a `dyn WitnessTrait`)
+/// can be moved across rayon worker boundaries — provers want to overlap
+/// commits running on the IRS engine with concurrent CPU work.
+pub trait WitnessTrait: Send + Sync {
     fn num_nodes(&self) -> usize;
     /// Reads the requested nodes in the same order as `indices`.
     fn read_nodes(&self, indices: &[usize]) -> Vec<Hash>;
