@@ -135,8 +135,11 @@ pub fn mixed_dot<F: Field, G: Field>(
 ) -> G {
     assert_eq!(a.len(), b.len());
 
+    // Avoid nested rayon parallelism: when this is called from inside a
+    // rayon worker (e.g. `evaluate_gamma_block`'s `par_chunks_mut`), spawning
+    // more parallel work here causes massive scheduler overhead
     #[cfg(feature = "parallel")]
-    if a.len() > workload_size::<G>() {
+    if a.len() > workload_size::<G>() && rayon::current_thread_index().is_none() {
         return a
             .par_iter()
             .zip(b)
