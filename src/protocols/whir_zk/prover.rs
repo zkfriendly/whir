@@ -12,7 +12,7 @@ use crate::{
     algebra::{
         embedding::Identity,
         linear_form::{Covector, Evaluate, LinearForm},
-        mixed_dot, scalar_mul_add,
+        mixed_dot, mixed_dot_sequential, scalar_mul_add,
     },
     hash::Hash,
     protocols::{
@@ -89,8 +89,11 @@ fn evaluate_gamma_block<F: Field>(
     #[cfg(feature = "parallel")]
     let beq_half_accum = {
         let batch = {
-            let cores = rayon::current_num_threads();
-            num_gammas.div_ceil(cores).max(1)
+            let cores = rayon::current_num_threads().max(1);
+            // Prefer more outer chunks than raw worker count: each task uses
+            // [`mixed_dot_sequential`], so oversubscribing the pool keeps many-core hosts
+            // busy without nested `par_iter` (which regresses some x86 hybrid setups).
+            num_gammas.div_ceil(cores.saturating_mul(2)).max(1)
         };
         let batch_stride = batch * stride_per_gamma;
         eval_results
@@ -119,7 +122,7 @@ fn evaluate_gamma_block<F: Field>(
                                 .sum();
                             for (j, g_hat) in bp.g_hats.iter().enumerate() {
                                 slot[off + 1 + j] =
-                                    one_plus_rho * mixed_dot(&embedding, &eq_buf, g_hat);
+                                    one_plus_rho * mixed_dot_sequential(&embedding, &eq_buf, g_hat);
                             }
                             let mut h = slot[off];
                             let mut bp_pow = blinding_challenge;

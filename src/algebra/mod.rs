@@ -144,6 +144,29 @@ pub fn mixed_dot<F: Field, G: Field>(
             .sum();
     }
 
+    mixed_dot_sequential_unchecked(embedding, a, b)
+}
+
+/// Same result as [`mixed_dot`], but never launches an inner `par_iter` / pool split.
+///
+/// Call this from code that is **already** running on the Rayon global pool (for example
+/// inside `par_chunks_mut` in `evaluate_gamma_block`). Callers that are not inside such a
+/// scope should use [`mixed_dot`] so large vectors still parallelize on a single thread.
+pub fn mixed_dot_sequential<F: Field, G: Field>(
+    embedding: &impl Embedding<Source = F, Target = G>,
+    a: &[G],
+    b: &[F],
+) -> G {
+    assert_eq!(a.len(), b.len());
+    mixed_dot_sequential_unchecked(embedding, a, b)
+}
+
+#[inline]
+fn mixed_dot_sequential_unchecked<F: Field, G: Field>(
+    embedding: &impl Embedding<Source = F, Target = G>,
+    a: &[G],
+    b: &[F],
+) -> G {
     a.iter()
         .zip(b)
         .map(|(a, b)| embedding.mixed_mul(*a, *b))
