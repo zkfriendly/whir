@@ -1,3 +1,5 @@
+use std::fmt;
+
 use ark_ff::Field;
 use ark_std::rand::{distributions::Standard, prelude::Distribution};
 #[cfg(feature = "tracing")]
@@ -5,10 +7,15 @@ use tracing::instrument;
 
 use super::{utils::BlindingPolynomials, Config};
 use crate::{
+    algebra::{embedding::Identity, random_vector},
     hash::Hash,
-    protocols::{irs_commit, whir},
+    protocols::{
+        irs_commit, whir,
+        whir_accelerator::{whir_prover_accelerator, DeviceVector, WhirProverAccelerator},
+    },
     transcript::{
-        Codec, DuplexSpongeInterface, ProverMessage, ProverState, VerificationResult, VerifierState,
+        Codec, DuplexSpongeInterface, ProverMessage, ProverState, VerificationResult,
+        VerifierMessage, VerifierState,
     },
 };
 
@@ -23,16 +30,56 @@ pub struct Commitment<F: Field> {
 ///
 /// Contains the masked polynomial witnesses, their coefficient vectors,
 /// the blinding polynomial family, and the single blinding commitment witness.
-#[derive(Clone, Debug)]
 pub struct Witness<F: Field> {
     pub f_hat_vectors: Vec<Vec<F>>,
+    pub f_hat_device_vectors: Vec<Box<dyn DeviceVector<F>>>,
     pub f_hat_witnesses: Vec<irs_commit::Witness<F, F>>,
     pub blinding_polynomials: Vec<BlindingPolynomials<F>>,
     pub blinding_vectors: Vec<Vec<F>>,
+    pub blinding_device_vectors: Vec<Box<dyn DeviceVector<F>>>,
+    pub blinding_packed_device_vector: Option<Box<dyn DeviceVector<F>>>,
     pub blinding_witness: irs_commit::Witness<F, F>,
 }
 
-impl<F: Field> Config<F> {
+impl<F: Field> Clone for Witness<F> {
+    fn clone(&self) -> Self {
+        Self {
+            f_hat_vectors: self.f_hat_vectors.clone(),
+            // Device vectors are mutable proof state; cloned witnesses fall back
+            // to the CPU upload path.
+            f_hat_device_vectors: Vec::new(),
+            f_hat_witnesses: self.f_hat_witnesses.clone(),
+            blinding_polynomials: self.blinding_polynomials.clone(),
+            blinding_vectors: self.blinding_vectors.clone(),
+            blinding_device_vectors: Vec::new(),
+            blinding_packed_device_vector: None,
+            blinding_witness: self.blinding_witness.clone(),
+        }
+    }
+}
+
+impl<F: Field> fmt::Debug for Witness<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Witness")
+            .field("f_hat_vectors", &self.f_hat_vectors)
+            .field("f_hat_device_vectors", &self.f_hat_device_vectors.len())
+            .field("f_hat_witnesses", &self.f_hat_witnesses)
+            .field("blinding_polynomials", &self.blinding_polynomials)
+            .field("blinding_vectors", &self.blinding_vectors)
+            .field(
+                "blinding_device_vectors",
+                &self.blinding_device_vectors.len(),
+            )
+            .field(
+                "blinding_packed_device_vector",
+                &self.blinding_packed_device_vector.is_some(),
+            )
+            .field("blinding_witness", &self.blinding_witness)
+            .finish()
+    }
+}
+
+impl<F: Field + 'static> Config<F> {
     /// Commit to one or more polynomials with zero-knowledge blinding.
     ///
     /// For each polynomial, samples fresh blinding coefficients from the
@@ -58,8 +105,10 @@ impl<F: Field> Config<F> {
         );
 
         let mut f_hat_vectors = Vec::with_capacity(polynomials.len());
+        let mut f_hat_device_vectors = Vec::with_capacity(polynomials.len());
         let mut f_hat_witnesses = Vec::with_capacity(polynomials.len());
         let mut blinding_polynomials = Vec::with_capacity(polynomials.len());
+        let accelerator = whir_prover_accelerator::<F>();
         let num_blinding_variables = self.num_blinding_variables();
         let num_witness_variables = self.num_witness_variables();
         for &poly in polynomials {
@@ -86,9 +135,20 @@ impl<F: Field> Config<F> {
                 .zip(mask.iter().cycle())
                 .map(|(&coeff, &m)| coeff + m)
                 .collect::<Vec<_>>();
-            let witness = self
-                .blinded_commitment
-                .commit(prover_state, &[f_hat_vec.as_slice()]);
+            let witness = if let Some(accelerator) = &accelerator {
+                let device_vector = accelerator.upload(&f_hat_vec);
+                let witness = commit_device_vector(
+                    &self.blinded_commitment,
+                    prover_state,
+                    &**accelerator,
+                    &*device_vector,
+                );
+                f_hat_device_vectors.push(device_vector);
+                witness
+            } else {
+                self.blinded_commitment
+                    .commit(prover_state, &[f_hat_vec.as_slice()])
+            };
             f_hat_vectors.push(f_hat_vec);
             f_hat_witnesses.push(witness);
             blinding_polynomials.push(blinding);
@@ -117,12 +177,29 @@ impl<F: Field> Config<F> {
         let blinding_witness = self
             .blinding_commitment
             .commit(prover_state, &blinding_vector_refs);
+        let (blinding_device_vectors, blinding_packed_device_vector) = accelerator.map_or_else(
+            || (Vec::new(), None),
+            |accelerator| {
+                let device_vectors = blinding_vectors
+                    .iter()
+                    .map(|vector| accelerator.upload(vector))
+                    .collect();
+                let packed = blinding_vectors
+                    .iter()
+                    .flat_map(|vector| vector.iter().copied())
+                    .collect::<Vec<_>>();
+                (device_vectors, Some(accelerator.upload(&packed)))
+            },
+        );
 
         Witness {
             f_hat_vectors,
+            f_hat_device_vectors,
             f_hat_witnesses,
             blinding_polynomials,
             blinding_vectors,
+            blinding_device_vectors,
+            blinding_packed_device_vector,
             blinding_witness,
         }
     }
@@ -146,5 +223,54 @@ impl<F: Field> Config<F> {
             .blinding_commitment
             .receive_commitment(verifier_state)?;
         Ok(Commitment { f_hat, blinding })
+    }
+}
+
+fn commit_device_vector<H, R, F>(
+    config: &whir::Config<Identity<F>>,
+    prover_state: &mut ProverState<H, R>,
+    accelerator: &dyn WhirProverAccelerator<F>,
+    vector: &dyn DeviceVector<F>,
+) -> irs_commit::Witness<F, F>
+where
+    Standard: Distribution<F>,
+    H: DuplexSpongeInterface,
+    R: ark_std::rand::RngCore + ark_std::rand::CryptoRng,
+    F: Field + Codec<[H::U]>,
+    Hash: ProverMessage<[H::U]>,
+{
+    assert_eq!(config.initial_committer.num_vectors, 1);
+    assert_eq!(vector.len(), config.initial_size());
+
+    let initial = &config.initial_committer;
+    let masks = random_vector(
+        prover_state.rng(),
+        initial.mask_length * initial.num_messages(),
+    );
+    let committed = accelerator
+        .commit_device_vector(
+            vector,
+            &masks,
+            initial.codeword_length,
+            initial.interleaving_depth,
+            &initial.matrix_commit,
+        )
+        .expect("WHIR accelerator failed to commit device vector");
+    prover_state.prover_message(&committed.root);
+
+    let oods_points: Vec<F> = prover_state.verifier_message_vec(initial.out_domain_samples);
+    let oods_matrix = accelerator.evaluate_univariate_many(vector, &oods_points);
+    for value in &oods_matrix {
+        prover_state.prover_message(value);
+    }
+
+    irs_commit::Witness {
+        masks,
+        rows: committed.rows,
+        matrix_witness: committed.matrix_witness,
+        out_of_domain: irs_commit::Evaluations {
+            points: oods_points,
+            matrix: oods_matrix,
+        },
     }
 }

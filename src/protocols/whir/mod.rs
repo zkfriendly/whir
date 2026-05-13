@@ -2,6 +2,7 @@
 
 mod config;
 mod prover;
+mod prover_accelerated;
 mod verifier;
 
 use std::fmt::Debug;

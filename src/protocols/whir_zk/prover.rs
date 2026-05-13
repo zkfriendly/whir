@@ -17,6 +17,7 @@ use crate::{
     hash::Hash,
     protocols::{
         whir::FinalClaim,
+        whir_accelerator::whir_prover_accelerator,
         whir_zk::utils::{
             build_combined_and_subproof_claims, fill_eq_weights_at_gamma_half,
             fold_weight_to_mask_size, BlindingPolynomials,
@@ -27,6 +28,32 @@ use crate::{
         VerifierMessage,
     },
 };
+
+struct ZeroLinearForm<F: Field> {
+    size: usize,
+    marker: std::marker::PhantomData<F>,
+}
+
+impl<F: Field> ZeroLinearForm<F> {
+    const fn new(size: usize) -> Self {
+        Self {
+            size,
+            marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<F: Field> LinearForm<F> for ZeroLinearForm<F> {
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    fn mle_evaluate(&self, _point: &[F]) -> F {
+        F::ZERO
+    }
+
+    fn accumulate(&self, _accumulator: &mut [F], _scalar: F) {}
+}
 
 /// Evaluate blinding polynomials at all gamma query points and accumulate beq weights.
 ///
@@ -50,7 +77,8 @@ fn evaluate_gamma_block<F: Field>(
     tau2: F,
     num_blinding_variables: usize,
     num_witness_variables: usize,
-) -> (Vec<F>, Vec<F>) {
+    accumulate_beq_weights: bool,
+) -> (Vec<F>, Option<Vec<F>>) {
     let num_polynomials = blinding_polynomials.len();
     let half_size = 1usize << num_blinding_variables;
     let weight_size = 1usize << (num_blinding_variables + 1);
@@ -109,7 +137,9 @@ fn evaluate_gamma_block<F: Field>(
                         let slot =
                             &mut chunk[local * stride_per_gamma..(local + 1) * stride_per_gamma];
                         fill_eq_weights_at_gamma_half(&mut eq_buf, gamma, num_blinding_variables);
-                        scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
+                        if accumulate_beq_weights {
+                            scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
+                        }
                         for (poly_idx, bp) in blinding_polynomials.iter().enumerate() {
                             let off = poly_idx * stride_per_poly;
                             slot[off] = eq_buf
@@ -155,7 +185,9 @@ fn evaluate_gamma_block<F: Field>(
         for (gi, &gamma) in h_gammas.iter().enumerate() {
             fill_eq_weights_at_gamma_half(&mut eq_buf, gamma, num_blinding_variables);
             let tau2_pow = tau2_powers[gi];
-            scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
+            if accumulate_beq_weights {
+                scalar_mul_add(&mut accum, tau2_pow, &eq_buf);
+            }
             for (poly_idx, bp) in blinding_polynomials.iter().enumerate() {
                 let off = gi * stride_per_gamma + poly_idx * stride_per_poly;
                 eval_results[off] = eq_buf
@@ -182,14 +214,14 @@ fn evaluate_gamma_block<F: Field>(
     };
 
     // Reconstruct full-size beq_weight_accum from half-size accumulator.
-    let beq_weight_accum = {
+    let beq_weight_accum = accumulate_beq_weights.then(|| {
         let mut full = vec![F::ZERO; weight_size];
         for j in 0..half_size {
             full[2 * j] = one_plus_rho * beq_half_accum[j];
             full[2 * j + 1] = neg_rho * beq_half_accum[j];
         }
         full
-    };
+    });
 
     (eval_results, beq_weight_accum)
 }
@@ -252,9 +284,12 @@ impl<F: Field> Config<F> {
         // Destructure early; blinding_polynomials is dropped after the gamma block.
         let Witness {
             f_hat_vectors,
+            f_hat_device_vectors,
             f_hat_witnesses,
             blinding_polynomials,
             blinding_vectors,
+            blinding_device_vectors,
+            blinding_packed_device_vector,
             blinding_witness,
         } = witness;
 
@@ -333,16 +368,35 @@ impl<F: Field> Config<F> {
         // tau2 batches across gamma query points.
         let tau1: F = prover_state.verifier_message();
         let tau2: F = prover_state.verifier_message();
-
-        let (eval_results, beq_weight_accum) = evaluate_gamma_block(
-            &blinding_polynomials,
-            &h_gammas,
-            masking_challenge,
-            blinding_challenge,
-            tau2,
-            num_blinding_variables,
-            num_witness_variables,
-        );
+        let gpu_gamma_block = blinding_packed_device_vector.as_deref().and_then(|packed| {
+            let accelerator = whir_prover_accelerator::<F>()?;
+            accelerator.evaluate_gamma_block(
+                packed,
+                &h_gammas,
+                masking_challenge,
+                blinding_challenge,
+                tau2,
+                num_polynomials,
+                num_witness_variables,
+                num_blinding_variables,
+            )
+        });
+        let (eval_results, beq_weight_accum, device_beq_weights) =
+            if let Some((eval_results, device_beq_weights)) = gpu_gamma_block {
+                (eval_results, None, Some(device_beq_weights))
+            } else {
+                let (eval_results, beq_weight_accum) = evaluate_gamma_block(
+                    &blinding_polynomials,
+                    &h_gammas,
+                    masking_challenge,
+                    blinding_challenge,
+                    tau2,
+                    num_blinding_variables,
+                    num_witness_variables,
+                    true,
+                );
+                (eval_results, beq_weight_accum, None)
+            };
 
         let num_gammas = h_gammas.len();
         let stride_per_poly = num_witness_variables + 2;
@@ -385,7 +439,6 @@ impl<F: Field> Config<F> {
             .collect();
         let (combined_claims, batched_blinding_subproof_claims) =
             build_combined_and_subproof_claims(&m_claims, &g_hat_slices, tau1);
-        let beq_weights = Covector::new(beq_weight_accum);
         for claim in &combined_claims {
             prover_state.prover_message(claim);
         }
@@ -396,26 +449,49 @@ impl<F: Field> Config<F> {
         let result = {
             #[cfg(feature = "tracing")]
             let _span = tracing::info_span!("inner_blinded_prove").entered();
-            self.blinded_commitment.prove(
-                prover_state,
-                f_hat_vectors.into_iter().map(Cow::Owned).collect(),
-                f_hat_witnesses.into_iter().map(Cow::Owned).collect(),
-                linear_forms,
-                Cow::Owned(modified_evaluations),
-            )
+            if f_hat_vectors.len() == 1 && f_hat_device_vectors.len() == 1 {
+                let f_hat_vector = f_hat_vectors.into_iter().next().expect("checked len");
+                let f_hat_device_vector = f_hat_device_vectors
+                    .into_iter()
+                    .next()
+                    .expect("checked len");
+                let f_hat_witness = f_hat_witnesses.into_iter().next().expect("checked len");
+                self.blinded_commitment
+                    .prove_accelerated_with_device_vector(
+                        prover_state,
+                        Cow::Owned(f_hat_vector),
+                        f_hat_device_vector,
+                        Cow::Owned(f_hat_witness),
+                        linear_forms,
+                        Cow::Owned(modified_evaluations),
+                    )
+            } else {
+                self.blinded_commitment.prove_accelerated(
+                    prover_state,
+                    f_hat_vectors.into_iter().map(Cow::Owned).collect(),
+                    f_hat_witnesses.into_iter().map(Cow::Owned).collect(),
+                    linear_forms,
+                    Cow::Owned(modified_evaluations),
+                )
+            }
         };
 
         {
             #[cfg(feature = "tracing")]
             let _span = tracing::info_span!("inner_blinding_prove").entered();
-            let blinding_forms: Vec<Box<dyn LinearForm<F>>> =
-                std::iter::once(Box::new(beq_weights) as Box<dyn LinearForm<F>>)
-                    .chain(
-                        w_folded_weights
-                            .into_iter()
-                            .map(|wf| Box::new(wf) as Box<dyn LinearForm<F>>),
-                    )
-                    .collect();
+            let first_blinding_form: Box<dyn LinearForm<F>> =
+                if let Some(beq_weight_accum) = beq_weight_accum {
+                    Box::new(Covector::new(beq_weight_accum))
+                } else {
+                    Box::new(ZeroLinearForm::new(self.blinding_commitment.initial_size()))
+                };
+            let blinding_forms: Vec<Box<dyn LinearForm<F>>> = std::iter::once(first_blinding_form)
+                .chain(
+                    w_folded_weights
+                        .into_iter()
+                        .map(|wf| Box::new(wf) as Box<dyn LinearForm<F>>),
+                )
+                .collect();
             let all_blinding_claims = [
                 &batched_blinding_subproof_claims[..],
                 &w_folded_blinding_evals[..],
@@ -423,13 +499,42 @@ impl<F: Field> Config<F> {
             .concat();
             // Blinding sub-proof result is discarded: the blinding WHIR's
             // evaluation point is not needed by the outer protocol.
-            let _ = self.blinding_commitment.prove(
-                prover_state,
-                blinding_vectors.into_iter().map(Cow::Owned).collect(),
-                vec![Cow::Owned(blinding_witness)],
-                blinding_forms,
-                Cow::Owned(all_blinding_claims),
-            );
+            let blinding_vectors = blinding_vectors
+                .into_iter()
+                .map(Cow::Owned)
+                .collect::<Vec<_>>();
+            let _ = if blinding_device_vectors.len() == blinding_vectors.len() {
+                if let Some(device_beq_weights) = device_beq_weights {
+                    self.blinding_commitment
+                        .prove_accelerated_with_device_vectors_and_first_linear_form(
+                            prover_state,
+                            blinding_vectors,
+                            blinding_device_vectors,
+                            vec![Cow::Owned(blinding_witness)],
+                            blinding_forms,
+                            device_beq_weights,
+                            Cow::Owned(all_blinding_claims),
+                        )
+                } else {
+                    self.blinding_commitment
+                        .prove_accelerated_with_device_vectors(
+                            prover_state,
+                            blinding_vectors,
+                            blinding_device_vectors,
+                            vec![Cow::Owned(blinding_witness)],
+                            blinding_forms,
+                            Cow::Owned(all_blinding_claims),
+                        )
+                }
+            } else {
+                self.blinding_commitment.prove_accelerated(
+                    prover_state,
+                    blinding_vectors,
+                    vec![Cow::Owned(blinding_witness)],
+                    blinding_forms,
+                    Cow::Owned(all_blinding_claims),
+                )
+            };
         }
 
         result
