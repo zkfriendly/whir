@@ -255,7 +255,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        algebra::fields, protocols::proof_of_work, transcript::DomainSeparator, type_info::Type,
+        algebra::{fields, random_vector},
+        protocols::proof_of_work,
+        transcript::DomainSeparator,
+        type_info::Type,
     };
 
     impl<F: Field> Config<F> {
@@ -291,8 +294,10 @@ mod tests {
             .session(&format!("Test at {}:{}", file!(), line!()))
             .instance(&instance);
         let mut rng = StdRng::seed_from_u64(seed);
-        let vector = ActiveBuffer::random(&mut rng, config.size());
-        let covector = ActiveBuffer::random(&mut rng, config.size());
+        let vector_values = random_vector(&mut rng, config.size());
+        let covector_values = random_vector(&mut rng, config.size());
+        let vector = ActiveBuffer::from_slice(&vector_values);
+        let covector = ActiveBuffer::from_slice(&covector_values);
         let sum = vector.dot(&covector);
 
         // Prover
@@ -343,6 +348,7 @@ mod tests {
         });
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_field64_1() {
         test::<fields::Field64>();

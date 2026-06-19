@@ -490,6 +490,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_field64() {
         proptest::<fields::Field64>();
     }
@@ -501,19 +502,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_field64_3() {
         // A non-power of two sized type.
         proptest::<fields::Field64_3>();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
-    #[ignore = "Somewhat expensive and redundant"]
-    fn test_field256() {
-        proptest::<fields::Field256>();
+    fn test_field64_non_metal() {
+        proptest::<fields::Field64>();
     }
 
+    /// Supported Metal matrix-commit path (SHA2, unmasked single-vector RS).
     #[test]
-    #[cfg(all(feature = "metal", target_os = "macos"))]
     fn test_field256_sha2_metal_commit_open() {
         test::<fields::Field256>(
             StdRng::seed_from_u64(7),

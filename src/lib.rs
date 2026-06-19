@@ -19,25 +19,27 @@ mod tests {
     pub fn init() {
         static INIT: Once = Once::new();
 
-        #[cfg(not(feature = "tracing"))]
-        INIT.call_once(|| {});
-
-        #[cfg(feature = "tracing")]
         INIT.call_once(|| {
-            use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            crate::buffer::MetalBuffer::<crate::algebra::fields::Field256>::warmup();
 
-            // Respect RUST_LOG if set, otherwise default for tests.
-            let filter =
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+            #[cfg(feature = "tracing")]
+            {
+                use tracing_subscriber::{fmt, fmt::format::FmtSpan, EnvFilter};
 
-            // Create a writer compatible with the testing harnesses
-            fmt()
-                .with_env_filter(filter)
-                .with_span_events(FmtSpan::ENTER)
-                .with_test_writer()
-                .init();
+                // Respect RUST_LOG if set, otherwise default for tests.
+                let filter =
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
 
-            tracing::debug!("Initialized test logger");
+                // Create a writer compatible with the testing harnesses
+                fmt()
+                    .with_env_filter(filter)
+                    .with_span_events(FmtSpan::ENTER)
+                    .with_test_writer()
+                    .init();
+
+                tracing::debug!("Initialized test logger");
+            }
         });
     }
 }

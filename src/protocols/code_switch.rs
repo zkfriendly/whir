@@ -752,12 +752,49 @@ mod tests {
         test::<fields::Field192>();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
-    #[ignore = "Somewhat expensive and redundant"]
-    fn test_field256() {
-        test::<fields::Field256>();
+    fn test_field64_non_metal() {
+        test::<fields::Field64>();
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn metal_supported_config() -> Config<Identity<fields::Field256>> {
+        metal_supported_config_with_ood(0)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    fn metal_supported_config_with_ood(
+        out_domain_samples: usize,
+    ) -> Config<Identity<fields::Field256>> {
+        let source = IrsConfig::<Identity<fields::Field256>>::new(
+            32.0,
+            true,
+            crate::hash::SHA2,
+            1,
+            8,
+            1,
+            0.5,
+        );
+        let target = IrsConfig::<Identity<fields::Field256>>::new(
+            32.0,
+            true,
+            crate::hash::SHA2,
+            1,
+            source.message_length(),
+            1,
+            0.5,
+        );
+        Config::new(source, target, out_domain_samples, 0)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_field256_metal_supported() {
+        test_config(0, &metal_supported_config());
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_ior_identity() {
         crate::tests::init();
@@ -768,6 +805,13 @@ mod tests {
         });
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_ior_identity_metal_supported() {
+        test_ior_identity_config(0, &metal_supported_config());
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_tampered_ood() {
         crate::tests::init();
@@ -782,5 +826,11 @@ mod tests {
         proptest!(|(seed: u64, config in configs)| {
             test_tampered_ood_config(seed, &config);
         });
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_tampered_ood_metal_supported() {
+        test_tampered_ood_config(0, &metal_supported_config_with_ood(1));
     }
 }

@@ -129,10 +129,15 @@ mod tests {
 
     use super::*;
     use crate::buffer::{ActiveBuffer, BufferOps};
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    use crate::algebra::{
+        embedding::Basefield,
+        fields::{Field64, Field64_3},
+    };
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    use crate::algebra::{embedding::Identity, fields::Field256};
     use crate::{
         algebra::{
-            embedding::Basefield,
-            fields::{Field64, Field64_3},
             linear_form::{Covector, Evaluate, LinearForm, MultilinearExtension},
             random_vector,
         },
@@ -142,11 +147,20 @@ mod tests {
         utils::test_serde,
     };
 
-    /// Field type used in the tests.
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     type F = Field64;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    type F = Field256;
 
-    /// Extension field type used in the tests.
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     type EF = Field64_3;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    type EF = Field256;
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    type WhirEmbedding = Basefield<EF>;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    type WhirEmbedding = Identity<Field256>;
 
     /// Build owned linear forms for `prove()` (which consumes them).
     fn build_prove_forms<F: Field>(
@@ -200,7 +214,7 @@ mod tests {
         };
 
         // Build global configuration from protocol parameters
-        let mut params = Config::<Basefield<EF>>::new(1 << num_variables, &whir_params);
+        let mut params = Config::<WhirEmbedding>::new(1 << num_variables, &whir_params);
         params.disable_pow();
         eprintln!("{params}");
 
@@ -215,7 +229,7 @@ mod tests {
             .map(|_| random_vector(thread_rng(), num_variables))
             .collect();
 
-        let mut linear_forms: Vec<Box<dyn LinearForm<EF>>> = Vec::new();
+        let mut linear_forms: Vec<Box<dyn Evaluate<WhirEmbedding>>> = Vec::new();
         let mut evaluations = Vec::new();
 
         for point in &points {
@@ -274,6 +288,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_whir_1() {
         for folding_factor in [1, 2, 3, 4] {
@@ -311,6 +326,13 @@ mod tests {
         make_whir_things(3, 2, 2, 0, false, 0);
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_whir_field256_metal_supported() {
+        make_whir_things(3, 2, 2, 0, false, 0);
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_whir_mixed_folding_factors() {
         let folding_factors = [1, 2, 3, 4];
@@ -373,7 +395,7 @@ mod tests {
             hash_id: hash::SHA2,
         };
 
-        let mut params = Config::new(1 << num_variables, &whir_params);
+        let mut params = Config::<WhirEmbedding>::new(1 << num_variables, &whir_params);
         params.disable_pow();
         eprintln!("{params}");
 
@@ -390,7 +412,7 @@ mod tests {
             .map(|_| random_vector(thread_rng(), num_variables))
             .collect();
 
-        let mut linear_forms: Vec<Box<dyn Evaluate<Basefield<EF>>>> = Vec::new();
+        let mut linear_forms: Vec<Box<dyn Evaluate<WhirEmbedding>>> = Vec::new();
         for point in &points {
             linear_forms.push(Box::new(MultilinearExtension {
                 point: point.clone(),
@@ -461,6 +483,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_whir_batch_1() {
         // Test with different configurations
@@ -499,6 +522,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_whir_batch_single_polynomial() {
         // Edge case: batch proving with just one polynomial should also work
@@ -542,7 +566,7 @@ mod tests {
             hash_id: hash::SHA2,
         };
 
-        let mut params = Config::<Basefield<EF>>::new(1 << num_variables, &whir_params);
+        let mut params = Config::<WhirEmbedding>::new(1 << num_variables, &whir_params);
         params.disable_pow();
 
         // Create test vectors
@@ -554,7 +578,7 @@ mod tests {
             .map(|_| random_vector(thread_rng(), num_variables))
             .collect();
 
-        let linear_forms: [Box<dyn Evaluate<Basefield<EF>>>; 2] = [
+        let linear_forms: [Box<dyn Evaluate<WhirEmbedding>>; 2] = [
             Box::new(MultilinearExtension {
                 point: constraint_points[0].clone(),
             }),
@@ -651,7 +675,7 @@ mod tests {
             hash_id: hash::SHA2,
         };
 
-        let mut params = Config::<Basefield<EF>>::new(1 << num_variables, &whir_params);
+        let mut params = Config::<WhirEmbedding>::new(1 << num_variables, &whir_params);
         params.disable_pow();
 
         // Create polynomials for each witness
@@ -665,7 +689,7 @@ mod tests {
             .map(|_| random_vector(thread_rng(), num_variables))
             .collect();
 
-        let mut linear_forms: Vec<Box<dyn Evaluate<Basefield<EF>>>> = Vec::new();
+        let mut linear_forms: Vec<Box<dyn Evaluate<WhirEmbedding>>> = Vec::new();
         for point in &points {
             linear_forms.push(Box::new(MultilinearExtension {
                 point: point.clone(),
@@ -736,6 +760,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_whir_batch_with_batch_size_2() {
         // This is the key regression test for the batch_size > 1 bug
@@ -797,7 +822,7 @@ mod tests {
         };
 
         // Build global configuration from multivariate + protocol parameters
-        let mut params = Config::new(1 << num_variables, &whir_params);
+        let mut params = Config::<WhirEmbedding>::new(1 << num_variables, &whir_params);
         params.disable_pow();
 
         let vectors: Vec<Vec<F>> = (0..batch_size)
@@ -827,14 +852,14 @@ mod tests {
         let batched_witness = params.commit(&mut prover_state, &buffer_refs);
 
         // Create a weights matrix and evaluations for each polynomial
-        let mut linear_forms: Vec<Box<dyn Evaluate<Basefield<F>>>> = Vec::new();
+        let mut linear_forms: Vec<Box<dyn Evaluate<WhirEmbedding>>> = Vec::new();
         for point in &points {
             linear_forms.push(Box::new(MultilinearExtension {
                 point: point.clone(),
             }));
         }
         linear_forms.push(Box::new(Covector {
-            vector: (0..1 << num_variables).map(F::from).collect(),
+            vector: (0..1 << num_variables).map(EF::from).collect(),
         }));
         let values = linear_forms
             .iter()
@@ -850,7 +875,7 @@ mod tests {
         // Generate a proof for the given statement and witness
         let weights_dyn_refs = linear_forms
             .iter()
-            .map(|w| w.as_ref() as &dyn LinearForm<F>)
+            .map(|w| w.as_ref() as &dyn LinearForm<EF>)
             .collect::<Vec<_>>();
         let _ = params.prove(
             &mut prover_state,
@@ -874,6 +899,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_batched_whir() {
         let folding_factors = [1, 4];

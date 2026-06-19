@@ -238,7 +238,7 @@ mod tests {
     use crate::{
         algebra::{
             dot,
-            fields::{self, Field64},
+            fields,
             multilinear_extend, random_vector,
         },
         buffer::ActiveBuffer,
@@ -371,7 +371,7 @@ mod tests {
     fn test_single_round() {
         test_config(
             0,
-            &Config::<Field64> {
+            &Config::<fields::Field256> {
                 field: Type::new(),
                 initial_size: 2,
                 round_pow: proof_of_work::Config::none(),
@@ -385,7 +385,7 @@ mod tests {
     fn test_two_rounds() {
         test_config(
             0,
-            &Config::<Field64> {
+            &Config::<fields::Field256> {
                 field: Type::new(),
                 initial_size: 3,
                 round_pow: proof_of_work::Config::none(),
@@ -399,7 +399,7 @@ mod tests {
     fn test_three_rounds() {
         test_config(
             0,
-            &Config::<Field64> {
+            &Config::<fields::Field256> {
                 field: Type::new(),
                 initial_size: 5,
                 round_pow: proof_of_work::Config::none(),
@@ -410,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_field64_1() {
         test::<fields::Field64>();
     }
@@ -438,9 +439,26 @@ mod tests {
         test::<fields::Field192>();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
-    #[ignore = "Somewhat expensive and redundant"]
-    fn test_field256() {
-        test::<fields::Field256>();
+    fn test_field64_non_metal() {
+        test::<fields::Field64>();
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_field256_metal_supported() {
+        for (initial_size, num_rounds, mask_length) in [(2, 1, 3), (3, 2, 3), (5, 3, 3)] {
+            test_config(
+                0,
+                &Config::<fields::Field256> {
+                    field: Type::new(),
+                    initial_size,
+                    round_pow: proof_of_work::Config::none(),
+                    num_rounds,
+                    mask_length,
+                },
+            );
+        }
     }
 }

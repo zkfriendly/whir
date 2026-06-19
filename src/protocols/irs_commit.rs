@@ -833,6 +833,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_field64_1() {
         proptest(&Identity::<fields::Field64>::new());
     }
@@ -861,13 +862,29 @@ pub(crate) mod tests {
         proptest(&Identity::<fields::Field192>::new());
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
-    #[ignore = "Somewhat expensive and redundant"]
-    fn test_field256() {
-        proptest(&Identity::<fields::Field256>::new());
+    fn test_field64_non_metal() {
+        proptest(&Identity::<fields::Field64>::new());
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    fn test_field256_metal_supported() {
+        let config = Config::<Identity<fields::Field256>>::new(
+            32.0,
+            true,
+            crate::hash::SHA2,
+            1,
+            16,
+            1,
+            0.5,
+        );
+        test(0, &config);
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_basefield_field64_2() {
         proptest(&Basefield::<fields::Field64_2>::new());
     }

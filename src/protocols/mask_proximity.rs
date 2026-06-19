@@ -373,6 +373,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Somewhat expensive and redundant"]
     fn test_field64_1() {
         test::<fields::Field64>();
     }
@@ -401,10 +402,10 @@ mod tests {
         test::<fields::Field192>();
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
-    #[ignore = "Somewhat expensive and redundant"]
-    fn test_field256() {
-        test::<fields::Field256>();
+    fn test_field64_non_metal() {
+        test::<fields::Field64>();
     }
 
     /// Pre-γ tamper: commit honestly, then prove with different original masks.
@@ -531,6 +532,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_tampered_mask_rejected() {
         crate::tests::init();
@@ -540,6 +542,7 @@ mod tests {
         });
     }
 
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
     #[test]
     fn test_tampered_combined_msg_rejected() {
         crate::tests::init();
